@@ -277,7 +277,7 @@ def build_scene(
         )
         # The 2D pinna mask cannot tell front from back surfaces sharing the
         # same (x, y); drop probes the pinna itself hides from the driver.
-        probes = _remove_driver_occluded_probes(probes, pinna_occ, grid)
+        probes = _remove_driver_occluded_probes(probes, pinna_occ, grid, driver_center)
     elif config.pinna.kind == "parametric":
         from headphone_sims.geometry.pinna import parametric_pinna
 
@@ -339,26 +339,44 @@ def _remove_driver_occluded_probes(
     probes: npt.NDArray[np.float64],
     occupancy: torch.Tensor,
     grid: Grid,
-    margin: float = 1.0e-3,
+    driver_center: Vec3,
+    skip: float = 2.5e-3,
 ) -> npt.NDArray[np.float64]:
-    """Drop probes hidden from the driver (-z) by the given occupancy.
+    """Keep only probes with a clear line of sight to the driver center.
 
-    A probe on the back of the pinna always has pinna voxels in front of it
-    (smaller z in its own x-y column); a front-surface or concha probe does
-    not. ``margin`` tolerates the staircase around the probe's own surface.
+    Marches each probe->driver segment through the voxel occupancy (half-cell
+    steps). This removes points wrapped around the pinna silhouette — which a
+    straight -z column test lets through — while the concha stays (visible
+    through its opening). The first ``skip`` of the segment is ignored so a
+    probe is not blocked by the staircase of its own surface.
     """
     occ = occupancy.numpy()
-    any_solid = occ.any(axis=2)
-    first_k = occ.argmax(axis=2)  # first solid cell along +z (0 where empty)
-    z_first = np.where(any_solid, (first_k + 0.5) * grid.dx, np.inf)
-    i = np.clip((probes[:, 0] / grid.dx - 0.5).round().astype(int), 0, grid.shape[0] - 1)
-    j = np.clip((probes[:, 1] / grid.dx - 0.5).round().astype(int), 0, grid.shape[1] - 1)
-    visible = z_first[i, j] >= probes[:, 2] - margin
+    target = np.asarray(driver_center, dtype=np.float64)
+    delta = target[None, :] - probes
+    length = np.linalg.norm(delta, axis=1)
+    direction = delta / length[:, None]
+    step = 0.5 * grid.dx
+    visible = np.ones(len(probes), dtype=bool)
+    n_steps = int(np.ceil((float(length.max()) - skip) / step))
+    shape = np.array(grid.shape)
+    for s in range(n_steps):
+        t = skip + s * step
+        active = visible & (t < length - step)
+        if not active.any():
+            break
+        pts = probes[active] + direction[active] * t
+        idx = np.floor(pts / grid.dx).astype(int)
+        inside = np.all((idx >= 0) & (idx < shape), axis=1)
+        blocked = np.zeros(int(active.sum()), dtype=bool)
+        ii = idx[inside]
+        blocked[inside] = occ[ii[:, 0], ii[:, 1], ii[:, 2]]
+        active_idx = np.flatnonzero(active)
+        visible[active_idx[blocked]] = False
     if not visible.any():
         raise ValueError("all probes are occluded from the driver; check the geometry")
     n_dropped = int((~visible).sum())
     if n_dropped:
-        print(f"dropped {n_dropped} probes occluded from the driver (back of pinna)")
+        print(f"dropped {n_dropped} probes without line of sight to the driver")
     out: npt.NDArray[np.float64] = probes[visible]
     return out
 

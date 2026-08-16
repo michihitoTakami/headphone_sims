@@ -81,16 +81,16 @@ def test_driver_occluded_probes_removed() -> None:
 
     grid = Grid.create((20, 20, 20), dx=1e-3)
     occ = torch.zeros(grid.shape, dtype=torch.bool)
-    occ[8:12, 8:12, 10] = True  # thin plate at z = 10.5 mm
+    occ[6:14, 6:14, 10] = True  # thin plate spanning z = 10..11 mm
+    driver = (10e-3, 10e-3, 1e-3)
     probes = np.array(
         [
             [10e-3, 10e-3, 8.0e-3],  # in front of the plate -> visible
             [10e-3, 10e-3, 14.0e-3],  # behind the plate -> occluded
-            [2e-3, 2e-3, 14.0e-3],  # deep but off the plate column -> visible
+            [1e-3, 1e-3, 11.0e-3],  # beside the plate, clear diagonal -> visible
         ]
     )
-    out = _remove_driver_occluded_probes(probes, occ, grid)
+    out = _remove_driver_occluded_probes(probes, occ, grid, driver)
     assert out.shape == (2, 3)
-    assert (out[:, 2] != 14.0e-3).any() or (out[:, 0] == 2e-3).any()
-    np.testing.assert_allclose(sorted(out[:, 2]), [8.0e-3, 14.0e-3])
+    np.testing.assert_allclose(sorted(out[:, 2]), [8.0e-3, 11.0e-3])
     assert not ((out[:, 0] == 10e-3) & (out[:, 2] == 14e-3)).any()
