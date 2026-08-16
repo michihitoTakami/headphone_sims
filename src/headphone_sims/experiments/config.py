@@ -54,7 +54,7 @@ def _build(cls: type[Any], data: dict[str, Any]) -> Any:
             kwargs[key] = tuple(_build(FilterSpec, v) for v in value)
         elif key == "rings":
             kwargs[key] = tuple((float(a), float(b)) for a, b in value)
-        elif key == "extra_rotation_deg":
+        elif key in ("extra_rotation_deg", "canal_hint") and value is not None:
             kwargs[key] = tuple(float(v) for v in value)
         elif f.type in ("float", "float | None") and value is not None:
             kwargs[key] = float(value)

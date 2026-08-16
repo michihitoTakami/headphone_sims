@@ -20,9 +20,14 @@ from headphone_sims.fdtd.receivers import ReceiverArray
 from headphone_sims.fdtd.simulation import Simulation, SnapshotConfig
 from headphone_sims.fdtd.sources import PistonSource, Source, gaussian_modulated_sine
 from headphone_sims.geometry import parametric
-from headphone_sims.geometry.mesh import load_mesh, surface_probes, voxelize
+from headphone_sims.geometry.mesh import load_mesh, voxelize
 from headphone_sims.geometry.parametric import HexHoles, HolePattern, RingSlits, Slots
-from headphone_sims.geometry.pinna import extract_ear_region, orient_pinna_to_scene
+from headphone_sims.geometry.pinna import (
+    extract_ear_region,
+    find_ear_canal_entrance,
+    orient_pinna_to_scene,
+    select_pinna_probes,
+)
 from headphone_sims.grid import Grid
 
 Vec3 = tuple[float, float, float]
@@ -69,10 +74,14 @@ class PinnaSpec:
     scale: float = 1.0  # e.g. 1e-3 if the mesh is in millimeters
     extra_rotation_deg: tuple[float, float, float] = (0.0, 0.0, 0.0)
     region_size: float = 90e-3
-    # Elliptical probe footprint (width x, height y) around the pinna center:
-    # probes are evaluated on the pinna itself, not the surrounding head skin.
-    # The geometry keeps the full region — only probe placement is restricted.
-    probe_region: tuple[float, float] = (42e-3, 72e-3)
+    # Ear-canal entrance in ORIGINAL mesh coordinates (after `scale`); None =
+    # auto-detect via the interaural-axis convention (HUTUBS-style alignment).
+    canal_hint: tuple[float, float, float] | None = None
+    # Pinna probe selection: cells protruding more than this beyond the fitted
+    # head-skin surface count as pinna; the concha bowl (recessed, so never
+    # "protruding") is added within concha_radius of the canal.
+    probe_protrusion: float = 2.5e-3
+    concha_radius: float = 15e-3
 
 
 @dataclass(frozen=True)
@@ -104,6 +113,7 @@ class BuiltScene:
     probe_positions: npt.NDArray[np.float64]
     reference_index: int  # probe used as the ear-canal-entrance reference
     solid: torch.Tensor  # bool occupancy (CPU), for geometry visualization
+    canal_position: Vec3 = (0.0, 0.0, 0.0)  # ear-canal entrance in scene coords
     porosities: list[float] = field(default_factory=list)
     # Named per-part occupancy grids (baffle, filter_1, pinna, ...) for
     # color-coded geometry visualization; their union equals ``solid``.
@@ -221,6 +231,7 @@ def build_scene(
         porosities.append(porosity)
 
     pinna_center = (driver_center[0], driver_center[1], z_pinna)
+    canal_position = pinna_center  # refined below for mesh pinnae
     probes: npt.NDArray[np.float64]
     if config.pinna.kind == "mesh":
         if config.pinna.mesh_path is None:
@@ -228,32 +239,40 @@ def build_scene(
         head = load_mesh(Path(config.pinna.mesh_path))
         if config.pinna.scale != 1.0:
             head.apply_scale(config.pinna.scale)
-        ear_mesh, ear_center = extract_ear_region(
+        if config.pinna.canal_hint is not None:
+            canal = np.asarray(config.pinna.canal_hint, dtype=np.float64)
+        else:
+            canal = find_ear_canal_entrance(
+                head, side=config.pinna.side, lateral_axis=config.pinna.lateral_axis
+            )
+        ear_mesh = extract_ear_region(
             head,
+            canal,
             side=config.pinna.side,
             box_size=config.pinna.region_size,
             lateral_axis=config.pinna.lateral_axis,
         )
         placed = orient_pinna_to_scene(
             ear_mesh,
-            ear_center,
-            pinna_center,
+            canal,
             side=config.pinna.side,
             lateral_axis=config.pinna.lateral_axis,
             extra_rotation_deg=config.pinna.extra_rotation_deg,
         )
+        # Aim the driver axis at the ear canal (x, y) and put the pinna's most
+        # protruding point on the z_pinna plane, so `distance` is the closest
+        # driver-to-pinna gap; the recessed canal lies deeper.
+        z_tip = float(placed.vertices[:, 2].min())
+        placed.apply_translation([pinna_center[0], pinna_center[1], z_pinna - z_tip])
+        canal_position = (pinna_center[0], pinna_center[1], z_pinna - z_tip)
         add_part("pinna", voxelize(placed, grid))
-        # Oversample the whole driver-facing surface, then keep only probes
-        # within the pinna footprint — the region mesh includes head skin
-        # around the ear, which should scatter sound but not be evaluated.
-        raw = surface_probes(
+        probes = select_pinna_probes(
             placed,
-            config.n_probes * 4,
+            np.asarray(canal_position),
+            config.n_probes,
             offset=config.probe_offset,
-            direction=(0.0, 0.0, -1.0),
-        )
-        probes = _filter_to_footprint(
-            raw, pinna_center, config.pinna.probe_region, config.n_probes
+            protrusion_threshold=config.pinna.probe_protrusion,
+            concha_radius=config.pinna.concha_radius,
         )
     elif config.pinna.kind == "parametric":
         from headphone_sims.geometry.pinna import parametric_pinna
@@ -283,8 +302,8 @@ def build_scene(
     else:
         probes = _remove_probes_in_solid(probes, solid, grid)
 
-    # Reference probe: closest to the nominal ear-canal entrance (pinna center).
-    ref = int(np.argmin(np.linalg.norm(probes - np.asarray(pinna_center), axis=1)))
+    # Reference probe: closest to the ear-canal entrance.
+    ref = int(np.argmin(np.linalg.norm(probes - np.asarray(canal_position), axis=1)))
 
     snapshot = (
         SnapshotConfig(every=config.snapshot_every, axis=0) if config.snapshot_every > 0 else None
@@ -306,28 +325,10 @@ def build_scene(
         probe_positions=probes,
         reference_index=ref,
         solid=solid,
+        canal_position=canal_position,
         porosities=porosities,
         parts=parts,
     )
-
-
-def _filter_to_footprint(
-    probes: npt.NDArray[np.float64],
-    center: Vec3,
-    region: tuple[float, float],
-    n_max: int,
-) -> npt.NDArray[np.float64]:
-    """Keep probes inside the elliptical (width, height) footprint around
-    ``center`` in the x-y plane, capped at ``n_max`` points."""
-    half_w, half_h = region[0] / 2.0, region[1] / 2.0
-    d = ((probes[:, 0] - center[0]) / half_w) ** 2 + ((probes[:, 1] - center[1]) / half_h) ** 2
-    inside = probes[d <= 1.0]
-    if not len(inside):
-        raise ValueError(
-            "no surface probes fall inside the pinna footprint; check pinna "
-            "placement or widen pinna.probe_region"
-        )
-    return inside[:n_max]
 
 
 def _remove_probes_in_solid(
