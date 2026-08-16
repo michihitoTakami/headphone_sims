@@ -196,4 +196,66 @@ class PistonSource:
         return baked.to(device)
 
 
-Source = PointSource | PistonSource
+@dataclass(frozen=True)
+class RectangularPistonSource:
+    """Rectangular vibrating diaphragm (planar-magnetic style): hard/soft
+    normal-velocity source over a width x height rectangle.
+
+    The rectangle's height axis is the projection of the scene +y direction
+    onto the source plane; width is perpendicular to it. Same hard-source
+    semantics as :class:`PistonSource`.
+    """
+
+    center: Vec3
+    normal: Vec3
+    width: float
+    height: float
+    waveform: torch.Tensor
+    hard: bool = True
+
+    def bake(self, grid: Grid, device: torch.device) -> BakedSource:
+        n = torch.tensor(self.normal, dtype=torch.float64)
+        norm = float(torch.linalg.vector_norm(n))
+        if norm == 0.0:
+            raise ValueError("piston normal must be non-zero")
+        n = n / norm
+        helper = torch.tensor([0.0, 1.0, 0.0], dtype=torch.float64)
+        if abs(float(n[1])) > 0.9:
+            helper = torch.tensor([1.0, 0.0, 0.0], dtype=torch.float64)
+        u = helper - n * float(torch.dot(helper, n))  # in-plane "height" axis
+        u = u / torch.linalg.vector_norm(u)
+        w = torch.linalg.cross(n, u)
+        c = torch.tensor(self.center, dtype=torch.float64)
+
+        idxs: list[torch.Tensor] = []
+        weights: list[torch.Tensor] = []
+        for axis in range(3):
+            if abs(float(n[axis])) < 1e-12:
+                idxs.append(torch.zeros(0, dtype=torch.int64))
+                weights.append(torch.zeros(0, dtype=torch.float32))
+                continue
+            gx, gy, gz = _face_coordinates(grid, axis)
+            dxv, dyv, dzv = gx - c[0], gy - c[1], gz - c[2]
+            axial = dxv * n[0] + dyv * n[1] + dzv * n[2]
+            a = dxv * u[0] + dyv * u[1] + dzv * u[2]
+            b = dxv * w[0] + dyv * w[1] + dzv * w[2]
+            on_rect = (
+                (axial.abs() <= 0.5 * grid.dx)
+                & (a.abs() <= self.height / 2.0)
+                & (b.abs() <= self.width / 2.0)
+            )
+            flat = on_rect.reshape(-1).nonzero(as_tuple=False).squeeze(1)
+            idxs.append(flat)
+            weights.append(torch.full((flat.shape[0],), float(n[axis]), dtype=torch.float32))
+        if all(i.numel() == 0 for i in idxs):
+            raise ValueError("rectangular piston does not intersect any velocity face")
+        baked = BakedSource(
+            waveform=self.waveform,
+            v_idx=(idxs[0], idxs[1], idxs[2]),
+            v_weight=(weights[0], weights[1], weights[2]),
+            hard=self.hard,
+        )
+        return baked.to(device)
+
+
+Source = PointSource | PistonSource | RectangularPistonSource

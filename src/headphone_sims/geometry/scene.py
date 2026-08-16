@@ -18,7 +18,12 @@ import torch
 from headphone_sims.fdtd.boundaries import SpongeConfig
 from headphone_sims.fdtd.receivers import ReceiverArray
 from headphone_sims.fdtd.simulation import Simulation, SnapshotConfig
-from headphone_sims.fdtd.sources import PistonSource, Source, gaussian_modulated_sine
+from headphone_sims.fdtd.sources import (
+    PistonSource,
+    RectangularPistonSource,
+    Source,
+    gaussian_modulated_sine,
+)
 from headphone_sims.geometry import parametric
 from headphone_sims.geometry.mesh import load_mesh, voxelize
 from headphone_sims.geometry.parametric import (
@@ -46,6 +51,17 @@ class DriverSpec:
     tilt_deg: float = 0.0  # rotation about the x axis; positive aims toward +y
     center_frequency: float = 10_000.0
     bandwidth_frequency: float = 9_900.0
+    # Rectangular (planar-magnetic) diaphragm: shape="rect" uses width x height
+    # (height runs along scene y, i.e. along the pinna) and ignores diameter.
+    shape: Literal["disc", "rect"] = "disc"
+    width: float = 65e-3
+    height: float = 90e-3
+
+    def half_extents(self) -> tuple[float, float]:
+        """Lateral half extents (x, y) of the radiating surface."""
+        if self.shape == "rect":
+            return (self.width / 2.0, self.height / 2.0)
+        return (self.diameter / 2.0, self.diameter / 2.0)
 
 
 @dataclass(frozen=True)
@@ -56,6 +72,13 @@ class FilterSpec:
     standoff: float = 3e-3  # distance from driver plane toward the ear
     thickness: float = 1e-3
     radius: float | None = None  # default: driver radius + 2 mm
+    # Rectangular plate (e.g. a planar-magnetic magnet-bar array): shape="rect"
+    # uses width x height; pattern_angle_deg rotates the hole pattern in-plane
+    # (Slots at 90 deg = vertical bars).
+    shape: Literal["disc", "rect"] = "disc"
+    width: float = 65e-3
+    height: float = 90e-3
+    pattern_angle_deg: float = 0.0
     # fib (Fibonacci/phyllotaxis spiral web, MDR-Z1R style):
     rib_width: float = 1.0e-3
     spirals_cw: int = 8
@@ -144,7 +167,8 @@ class BuiltScene:
 
 def _domain_grid(config: SceneConfig) -> tuple[Grid, Vec3, float]:
     """Grid, driver center, and pinna reference z."""
-    r_driver = config.driver.diameter / 2.0
+    hx, hy = config.driver.half_extents()
+    r_driver = max(hx, hy)
     r_baffle = config.baffle_radius or (r_driver + 10e-3)
     r_pinna = 45e-3 if config.pinna.kind != "none" else 30e-3
     r_lateral = max(r_baffle, r_pinna) + config.lateral_margin
@@ -172,7 +196,8 @@ def build_scene(
     verbatim (for paired with/without-filter runs, which must share probes)."""
     grid, driver_center, z_pinna = _domain_grid(config)
     n_steps = int(np.ceil(config.record_ms * 1e-3 / grid.dt))
-    r_driver = config.driver.diameter / 2.0
+    drv_hx, drv_hy = config.driver.half_extents()
+    r_driver = max(drv_hx, drv_hy)
 
     tilt = np.deg2rad(config.driver.tilt_deg)
     normal = (0.0, float(np.sin(tilt)), float(np.cos(tilt)))
@@ -183,15 +208,27 @@ def build_scene(
         center_frequency=config.driver.center_frequency,
         bandwidth_frequency=config.driver.bandwidth_frequency,
     )
-    sources: list[Source] = [
-        PistonSource(
-            center=driver_center,
-            normal=normal,
-            radius=r_driver,
-            inner_radius=config.driver.inner_diameter / 2.0,
-            waveform=waveform,
-        )
-    ]
+    sources: list[Source]
+    if config.driver.shape == "rect":
+        sources = [
+            RectangularPistonSource(
+                center=driver_center,
+                normal=normal,
+                width=config.driver.width,
+                height=config.driver.height,
+                waveform=waveform,
+            )
+        ]
+    else:
+        sources = [
+            PistonSource(
+                center=driver_center,
+                normal=normal,
+                radius=r_driver,
+                inner_radius=config.driver.inner_diameter / 2.0,
+                waveform=waveform,
+            )
+        ]
 
     solid = torch.zeros(grid.shape, dtype=torch.bool)
     porosities: list[float] = []
@@ -240,24 +277,47 @@ def build_scene(
         )
 
     for i, spec in enumerate(config.filters):
-        r_filter = spec.radius or (r_driver + 2e-3)
-        occ, porosity = parametric.plate(
-            grid,
-            along_normal(driver_center, spec.standoff),
-            normal,
-            radius=r_filter,
-            thickness=spec.thickness,
-            pattern=spec.pattern(),
-        )
-        if spec.sealed:
-            occ = occ | parametric.annular_collar(
+        if spec.shape == "rect":
+            occ, porosity = parametric.rect_plate(
                 grid,
-                driver_center,
+                along_normal(driver_center, spec.standoff),
+                normal,
+                width=spec.width,
+                height=spec.height,
+                thickness=spec.thickness,
+                pattern=spec.pattern(),
+                pattern_angle_deg=spec.pattern_angle_deg,
+            )
+            if spec.sealed:
+                occ = occ | parametric.rect_collar(
+                    grid,
+                    driver_center,
+                    normal,
+                    width=spec.width,
+                    height=spec.height,
+                    length=spec.standoff + spec.thickness / 2.0,
+                    thickness=2 * config.dx,
+                )
+        else:
+            r_filter = spec.radius or (r_driver + 2e-3)
+            occ, porosity = parametric.plate(
+                grid,
+                along_normal(driver_center, spec.standoff),
                 normal,
                 radius=r_filter,
-                length=spec.standoff + spec.thickness / 2.0,
-                thickness=2 * config.dx,
+                thickness=spec.thickness,
+                pattern=spec.pattern(),
+                pattern_angle_deg=spec.pattern_angle_deg,
             )
+            if spec.sealed:
+                occ = occ | parametric.annular_collar(
+                    grid,
+                    driver_center,
+                    normal,
+                    radius=r_filter,
+                    length=spec.standoff + spec.thickness / 2.0,
+                    thickness=2 * config.dx,
+                )
         add_part(f"filter_{i + 1}", occ)
         porosities.append(porosity)
 

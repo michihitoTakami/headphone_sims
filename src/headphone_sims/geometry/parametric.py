@@ -142,6 +142,7 @@ def plate(
     radius: float,
     thickness: float,
     pattern: HolePattern | None = None,
+    pattern_angle_deg: float = 0.0,
 ) -> tuple[torch.Tensor, float]:
     """Circular plate (optionally perforated). Returns (occupancy, open porosity).
 
@@ -168,13 +169,97 @@ def plate(
     )
     solid_local = in_disc.clone()
     if pattern is not None:
-        solid_local &= ~pattern.open_mask(a, b)
+        ang = math.radians(pattern_angle_deg)
+        pa = a * math.cos(ang) + b * math.sin(ang)
+        pb = -a * math.sin(ang) + b * math.cos(ang)
+        solid_local &= ~pattern.open_mask(pa, pb)
     n_disc = int(in_disc.sum())
     porosity = 1.0 - int(solid_local.sum()) / n_disc if n_disc else 0.0
 
     occ = torch.zeros(grid.shape, dtype=torch.bool)
     occ[sx, sy, sz] = solid_local
     return occ, porosity
+
+
+def rect_plate(
+    grid: Grid,
+    center: Vec3,
+    normal: Vec3,
+    width: float,
+    height: float,
+    thickness: float,
+    pattern: HolePattern | None = None,
+    pattern_angle_deg: float = 0.0,
+) -> tuple[torch.Tensor, float]:
+    """Rectangular plate (optionally perforated). Returns (occupancy, porosity).
+
+    The height axis is the projection of scene +y onto the plate plane.
+    ``pattern_angle_deg`` rotates the hole pattern in-plane (e.g. 90 to turn
+    horizontal slots into vertical magnet-bar gaps).
+    """
+    n, u, w = _rect_frame(normal)
+    half = max(width, height) / 2.0 + thickness + 2 * grid.dx
+    (sx, sy, sz), gx, gy, gz = _subbox(grid, center, half)
+    dxv, dyv, dzv = gx - center[0], gy - center[1], gz - center[2]
+    axial = dxv * n[0] + dyv * n[1] + dzv * n[2]
+    a = dxv * u[0] + dyv * u[1] + dzv * u[2]
+    b = dxv * w[0] + dyv * w[1] + dzv * w[2]
+    bias = 1e-3 * grid.dx
+    in_rect = (
+        (axial > -thickness / 2.0 + bias)
+        & (axial <= thickness / 2.0 + bias)
+        & (a.abs() <= height / 2.0)
+        & (b.abs() <= width / 2.0)
+    )
+    solid_local = in_rect.clone()
+    if pattern is not None:
+        ang = math.radians(pattern_angle_deg)
+        pa = a * math.cos(ang) + b * math.sin(ang)
+        pb = -a * math.sin(ang) + b * math.cos(ang)
+        solid_local &= ~pattern.open_mask(pa, pb)
+    n_rect = int(in_rect.sum())
+    porosity = 1.0 - int(solid_local.sum()) / n_rect if n_rect else 0.0
+    occ = torch.zeros(grid.shape, dtype=torch.bool)
+    occ[sx, sy, sz] = solid_local
+    return occ, porosity
+
+
+def rect_collar(
+    grid: Grid,
+    center: Vec3,
+    normal: Vec3,
+    width: float,
+    height: float,
+    length: float,
+    thickness: float,
+) -> torch.Tensor:
+    """Rectangular side wall sealing a standoff cavity (rect_plate's rim)."""
+    n, u, w = _rect_frame(normal)
+    half = max(width, height) / 2.0 + thickness + length + 2 * grid.dx
+    (sx, sy, sz), gx, gy, gz = _subbox(grid, center, half)
+    dxv, dyv, dzv = gx - center[0], gy - center[1], gz - center[2]
+    axial = dxv * n[0] + dyv * n[1] + dzv * n[2]
+    a = (dxv * u[0] + dyv * u[1] + dzv * u[2]).abs()
+    b = (dxv * w[0] + dyv * w[1] + dzv * w[2]).abs()
+    inside = (a <= height / 2.0) & (b <= width / 2.0)
+    outside_ring = (a <= height / 2.0 + thickness) & (b <= width / 2.0 + thickness)
+    ring = (axial >= 0.0) & (axial <= length) & outside_ring & ~inside
+    occ = torch.zeros(grid.shape, dtype=torch.bool)
+    occ[sx, sy, sz] = ring
+    return occ
+
+
+def _rect_frame(normal: Vec3) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Frame whose u axis is the projection of +y (scene vertical) in-plane."""
+    n = torch.tensor(normal, dtype=torch.float64)
+    n = n / torch.linalg.vector_norm(n)
+    helper = torch.tensor([0.0, 1.0, 0.0], dtype=torch.float64)
+    if float(n[1].abs()) > 0.9:
+        helper = torch.tensor([1.0, 0.0, 0.0], dtype=torch.float64)
+    u = helper - n * torch.dot(helper, n)
+    u = u / torch.linalg.vector_norm(u)
+    w = torch.linalg.cross(n, u)
+    return n, u, w
 
 
 def annular_collar(

@@ -1,0 +1,32 @@
+# Audeze-style planar-magnetic driver: 90 x 65 mm rectangular diaphragm with a
+# parallel magnet-bar array in front (bars 4mm wide / gaps 3mm, 43% open,
+# 3mm thick, 1mm from the diaphragm), sealed at the rim. Bars run along the
+# long (vertical) axis. Predicted Helmholtz resonance ~15 kHz (in band —
+# thick bars + shallow cavity), which is why real designs add damping/Fazors.
+name: hutubs_90mm_planar_magnet
+device: null
+compare_without_filters: true
+scene:
+  dx: 0.5e-3
+  distance: 15.0e-3
+  record_ms: 2.5
+  snapshot_every: 40
+  driver:
+    shape: rect
+    width: 65.0e-3
+    height: 90.0e-3
+    tilt_deg: 0.0
+  filters:
+    - kind: slots
+      shape: rect
+      width: 65.0e-3
+      height: 90.0e-3
+      slot_width: 3.0e-3 # open gap between bars
+      pitch: 7.0e-3 # bar 4mm + gap 3mm
+      pattern_angle_deg: 90.0 # bars run vertically (along the 90mm axis)
+      thickness: 3.0e-3 # magnet bar depth
+      standoff: 2.5e-3 # 1mm diaphragm-to-magnet gap + half thickness
+  pinna:
+    kind: mesh
+    mesh_path: data/hutubs/pp1_3DheadMesh.ply
+    side: left
