@@ -14,7 +14,7 @@ TINY_CONFIG = {
     "compare_without_filters": True,
     "scene": {
         "dx": 2.0e-3,
-        "distance": 12.0e-3,
+        "distance": 26.0e-3,
         "record_ms": 0.25,
         "snapshot_every": 30,
         "sponge_thickness": 8,

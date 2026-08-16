@@ -5,7 +5,7 @@ device: null # auto: cuda if available
 compare_without_filters: true
 scene:
   dx: 0.5e-3
-  distance: 15.0e-3
+  distance: 25.0e-3 # parametric pinna protrudes 18mm toward the driver
   record_ms: 2.0
   snapshot_every: 40
   driver:
