@@ -1,0 +1,23 @@
+# HUTUBS subject 1 head mesh (fetch first: `headphone-sims fetch-data hutubs --subjects 1`).
+# HUTUBS meshes are in meters; if a mesh turns out to be in mm, set pinna.scale: 1.0e-3.
+name: hutubs_pp1_hex
+device: null
+compare_without_filters: true
+scene:
+  dx: 0.5e-3
+  distance: 18.0e-3
+  record_ms: 2.5
+  snapshot_every: 40
+  driver:
+    diameter: 45.0e-3
+    tilt_deg: 0.0
+  filters:
+    - kind: hex
+      hole_radius: 0.5e-3
+      pitch: 2.0e-3
+      thickness: 1.0e-3
+      standoff: 3.0e-3
+  pinna:
+    kind: mesh
+    mesh_path: data/hutubs/pp1_3DheadMesh.ply
+    side: left

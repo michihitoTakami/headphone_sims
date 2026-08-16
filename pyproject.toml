@@ -1,0 +1,72 @@
+[project]
+name = "headphone-sims"
+version = "0.1.0"
+description = "3D acoustic FDTD simulator for headphone driver-to-pinna wavefront analysis"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+authors = [{ name = "Michihito Takami" }]
+dependencies = [
+    "torch>=2.9",
+    "numpy>=2.0",
+    "scipy>=1.14",
+    "trimesh>=4.5",
+    "rtree>=1.3",
+    "matplotlib>=3.9",
+    "pyyaml>=6.0",
+    "jinja2>=3.1",
+    "shapely>=2.1.2",
+    "mapbox-earcut>=2.0.0",
+    "manifold3d>=3.5.2",
+]
+
+[project.scripts]
+headphone-sims = "headphone_sims.cli:main"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.12",
+    "mypy>=1.15",
+    "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "pre-commit>=4.0",
+    "detect-secrets>=1.5",
+    "types-pyyaml>=6.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/headphone_sims"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "NPY", "RUF"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+# trimesh ships no type stubs; allow calling into it from the geometry layer.
+module = ["headphone_sims.geometry.*"]
+disallow_untyped_calls = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "gpu: requires CUDA",
+    "slow: long-running validation runs",
+]
+addopts = "-q -m 'not slow'"
+
+[tool.coverage.run]
+source = ["src"]

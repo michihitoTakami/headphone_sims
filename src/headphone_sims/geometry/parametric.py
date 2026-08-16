@@ -1,0 +1,166 @@
+"""Parametric headphone parts as occupancy grids: baffles, cups, perforated plates.
+
+All builders return a bool tensor of ``grid.shape`` (True = rigid solid). Parts
+are computed only within their bounding sub-box for speed. Hole patterns are
+defined in the plate's local (a, b) plane coordinates; True in a pattern mask
+means OPEN (air).
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+
+import torch
+
+from headphone_sims.grid import Grid
+
+Vec3 = tuple[float, float, float]
+
+
+def _local_frame(normal: Vec3) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    n = torch.tensor(normal, dtype=torch.float64)
+    n = n / torch.linalg.vector_norm(n)
+    helper = torch.tensor([0.0, 0.0, 1.0], dtype=torch.float64)
+    if float(n[2].abs()) > 0.9:
+        helper = torch.tensor([1.0, 0.0, 0.0], dtype=torch.float64)
+    u = torch.linalg.cross(n, helper)
+    u = u / torch.linalg.vector_norm(u)
+    w = torch.linalg.cross(n, u)
+    return n, u, w
+
+
+def _subbox(
+    grid: Grid, center: Vec3, half_extent: float
+) -> tuple[tuple[slice, slice, slice], torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Slices into the full grid plus cell-center coordinates of the sub-box."""
+    slices = []
+    coords = []
+    for axis in range(3):
+        lo = max(0, int((center[axis] - half_extent) / grid.dx) - 1)
+        hi = min(grid.shape[axis], int((center[axis] + half_extent) / grid.dx) + 2)
+        if lo >= hi:
+            raise ValueError(f"part at {center} lies outside the grid along axis {axis}")
+        slices.append(slice(lo, hi))
+        coords.append((torch.arange(lo, hi, dtype=torch.float64) + 0.5) * grid.dx)
+    gx, gy, gz = torch.meshgrid(coords[0], coords[1], coords[2], indexing="ij")
+    return (slices[0], slices[1], slices[2]), gx, gy, gz
+
+
+class HolePattern:
+    """Base: subclasses mark where the plate is OPEN."""
+
+    def open_mask(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class HexHoles(HolePattern):
+    """Hexagonal lattice of circular holes (typical planar-magnetic grille)."""
+
+    hole_radius: float
+    pitch: float
+
+    def open_mask(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        row_h = self.pitch * math.sqrt(3.0) / 2.0
+        m0 = torch.round(b / row_h)
+        best = torch.full_like(a, float("inf"))
+        for dm in (-1.0, 0.0, 1.0):
+            m = m0 + dm
+            b_row = m * row_h
+            offset = torch.where(m.to(torch.int64) % 2 == 0, 0.0, self.pitch / 2.0)
+            a_near = torch.round((a - offset) / self.pitch) * self.pitch + offset
+            d2 = (a - a_near) ** 2 + (b - b_row) ** 2
+            best = torch.minimum(best, d2)
+        return best <= self.hole_radius**2
+
+
+@dataclass(frozen=True)
+class Slots(HolePattern):
+    """Parallel open slots of ``width`` spaced ``pitch`` apart along the a-axis."""
+
+    width: float
+    pitch: float
+
+    def open_mask(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        frac = torch.remainder(a + self.pitch / 2.0, self.pitch) - self.pitch / 2.0
+        return frac.abs() <= self.width / 2.0
+
+
+@dataclass(frozen=True)
+class RingSlits(HolePattern):
+    """Concentric open annular slits given as (r_inner, r_outer) pairs."""
+
+    rings: tuple[tuple[float, float], ...]
+
+    def open_mask(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        r = torch.sqrt(a**2 + b**2)
+        mask = torch.zeros_like(a, dtype=torch.bool)
+        for r_in, r_out in self.rings:
+            mask |= (r >= r_in) & (r <= r_out)
+        return mask
+
+
+def plate(
+    grid: Grid,
+    center: Vec3,
+    normal: Vec3,
+    radius: float,
+    thickness: float,
+    pattern: HolePattern | None = None,
+) -> tuple[torch.Tensor, float]:
+    """Circular plate (optionally perforated). Returns (occupancy, open porosity).
+
+    Porosity is the open-area fraction of the disc region, measured on the
+    voxelized mid-slab — i.e., what the FDTD grid actually sees.
+    """
+    n, u, w = _local_frame(normal)
+    (sx, sy, sz), gx, gy, gz = _subbox(grid, center, radius + thickness + 2 * grid.dx)
+    dxv = gx - center[0]
+    dyv = gy - center[1]
+    dzv = gz - center[2]
+    axial = dxv * n[0] + dyv * n[1] + dzv * n[2]
+    a = dxv * u[0] + dyv * u[1] + dzv * u[2]
+    b = dxv * w[0] + dyv * w[1] + dzv * w[2]
+    radial2 = a**2 + b**2
+    in_disc = (axial.abs() <= thickness / 2.0) & (radial2 <= radius**2)
+    solid_local = in_disc.clone()
+    if pattern is not None:
+        solid_local &= ~pattern.open_mask(a, b)
+    n_disc = int(in_disc.sum())
+    porosity = 1.0 - int(solid_local.sum()) / n_disc if n_disc else 0.0
+
+    occ = torch.zeros(grid.shape, dtype=torch.bool)
+    occ[sx, sy, sz] = solid_local
+    return occ, porosity
+
+
+def cup_shell(
+    grid: Grid,
+    center: Vec3,
+    axis: Vec3,
+    inner_radius: float,
+    depth: float,
+    thickness: float,
+) -> torch.Tensor:
+    """Open cylindrical earcup: side wall plus closed back.
+
+    ``center`` is the middle of the open rim plane; the cup extends ``depth``
+    along ``axis`` (pointing from rim toward the back plate).
+    """
+    n, u, w = _local_frame(axis)
+    half = inner_radius + thickness + depth + 2 * grid.dx
+    (sx, sy, sz), gx, gy, gz = _subbox(grid, center, half)
+    dxv = gx - center[0]
+    dyv = gy - center[1]
+    dzv = gz - center[2]
+    axial = dxv * n[0] + dyv * n[1] + dzv * n[2]
+    a = dxv * u[0] + dyv * u[1] + dzv * u[2]
+    b = dxv * w[0] + dyv * w[1] + dzv * w[2]
+    r = torch.sqrt(a**2 + b**2)
+    in_length = (axial >= 0.0) & (axial <= depth + thickness)
+    wall = in_length & (r >= inner_radius) & (r <= inner_radius + thickness)
+    back = (axial >= depth) & (axial <= depth + thickness) & (r <= inner_radius + thickness)
+    occ = torch.zeros(grid.shape, dtype=torch.bool)
+    occ[sx, sy, sz] = wall | back
+    return occ

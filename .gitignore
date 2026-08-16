@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+
+# Downloaded datasets (fetched via `headphone-sims fetch-data`)
+data/
+
+# Simulation outputs
+runs/
+
+# Editors
+.idea/
+.vscode/
