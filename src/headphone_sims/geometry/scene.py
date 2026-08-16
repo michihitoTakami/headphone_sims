@@ -50,6 +50,10 @@ class FilterSpec:
     standoff: float = 3e-3  # distance from driver plane toward the ear
     thickness: float = 1e-3
     radius: float | None = None  # default: driver radius + 2 mm
+    # Seal the rim to the baffle with a cylindrical collar (realistic mounting:
+    # all sound must pass through the holes). False = free-floating disc,
+    # which lets sound diffract around the rim through the standoff gap.
+    sealed: bool = True
     hole_radius: float = 0.5e-3  # hex
     pitch: float = 2e-3  # hex, slots
     slot_width: float = 1e-3  # slots
@@ -227,6 +231,15 @@ def build_scene(
             thickness=spec.thickness,
             pattern=spec.pattern(),
         )
+        if spec.sealed:
+            occ = occ | parametric.annular_collar(
+                grid,
+                driver_center,
+                normal,
+                radius=r_filter,
+                length=spec.standoff + spec.thickness / 2.0,
+                thickness=2 * config.dx,
+            )
         add_part(f"filter_{i + 1}", occ)
         porosities.append(porosity)
 

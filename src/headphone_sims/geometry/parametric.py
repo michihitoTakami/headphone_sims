@@ -135,6 +135,34 @@ def plate(
     return occ, porosity
 
 
+def annular_collar(
+    grid: Grid,
+    center: Vec3,
+    normal: Vec3,
+    radius: float,
+    length: float,
+    thickness: float,
+) -> torch.Tensor:
+    """Cylindrical side wall sealing a standoff cavity (e.g. driver-to-grille).
+
+    Solid ring with inner radius ``radius`` extending ``length`` along
+    ``normal`` from the plane of ``center``.
+    """
+    n, u, w = _local_frame(normal)
+    (sx, sy, sz), gx, gy, gz = _subbox(grid, center, radius + thickness + length + 2 * grid.dx)
+    dxv = gx - center[0]
+    dyv = gy - center[1]
+    dzv = gz - center[2]
+    axial = dxv * n[0] + dyv * n[1] + dzv * n[2]
+    a = dxv * u[0] + dyv * u[1] + dzv * u[2]
+    b = dxv * w[0] + dyv * w[1] + dzv * w[2]
+    r = torch.sqrt(a**2 + b**2)
+    ring = (axial >= 0.0) & (axial <= length) & (r >= radius) & (r <= radius + thickness)
+    occ = torch.zeros(grid.shape, dtype=torch.bool)
+    occ[sx, sy, sz] = ring
+    return occ
+
+
 def cup_shell(
     grid: Grid,
     center: Vec3,
