@@ -92,6 +92,10 @@ class FilterSpec:
     width: float = 65e-3
     height: float = 90e-3
     pattern_angle_deg: float = 0.0
+    # Curved grille following a dome diaphragm's profile at constant `gap`
+    # (real Z1R protector). Requires driver.shape="dome"; `standoff` ignored.
+    follow_profile: bool = False
+    gap: float = 2e-3
     # Fazor-style chamfer for kind="slots": >0 flares the gap toward the ear
     # over the exit `chamfer_fraction` of the thickness (bar cross-section
     # becomes trapezoidal), shortening the acoustic neck.
@@ -305,6 +309,31 @@ def build_scene(
         )
 
     for i, spec in enumerate(config.filters):
+        if spec.follow_profile:
+            if config.driver.shape != "dome":
+                raise ValueError("follow_profile grilles require driver.shape='dome'")
+            occ, porosity = parametric.profiled_plate(
+                grid,
+                driver_center,
+                normal,
+                dome_profile,
+                gap=spec.gap,
+                thickness=spec.thickness,
+                pattern=spec.pattern(),
+                pattern_angle_deg=spec.pattern_angle_deg,
+            )
+            if spec.sealed:
+                occ = occ | parametric.annular_collar(
+                    grid,
+                    driver_center,
+                    normal,
+                    radius=dome_profile.radius,
+                    length=spec.gap + spec.thickness + grid.dx,
+                    thickness=2 * config.dx,
+                )
+            add_part(f"filter_{i + 1}", occ)
+            porosities.append(porosity)
+            continue
         if config.driver.shape == "dome" and (
             spec.standoff - spec.thickness / 2.0 <= config.driver.dome_depth + config.dx
         ):

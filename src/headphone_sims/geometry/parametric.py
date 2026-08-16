@@ -310,6 +310,51 @@ class DomeProfile:
         return torch.where(r <= self.radius, h.clamp(min=0.0), torch.zeros_like(h))
 
 
+def profiled_plate(
+    grid: Grid,
+    center: Vec3,
+    normal: Vec3,
+    profile: DomeProfile,
+    gap: float,
+    thickness: float,
+    pattern: HolePattern | None = None,
+    pattern_angle_deg: float = 0.0,
+) -> tuple[torch.Tensor, float]:
+    """Curved grille following the diaphragm profile at a constant ``gap``
+    (the real MDR-Z1R protector is domed, keeping a shallow uniform cavity).
+
+    Solid shell where local axial is in (h(r)+gap, h(r)+gap+thickness], with
+    the hole pattern applied in-plane. ``center`` is the diaphragm rim-plane
+    center; the shell spans the diaphragm radius.
+    """
+    n, u, w = _local_frame(normal)
+    half = profile.radius + profile.dome_depth + gap + thickness + 2 * grid.dx
+    (sx, sy, sz), gx, gy, gz = _subbox(grid, center, half)
+    dxv = gx - center[0]
+    dyv = gy - center[1]
+    dzv = gz - center[2]
+    axial = dxv * n[0] + dyv * n[1] + dzv * n[2]
+    a = dxv * u[0] + dyv * u[1] + dzv * u[2]
+    b = dxv * w[0] + dyv * w[1] + dzv * w[2]
+    r = torch.sqrt(a**2 + b**2)
+    h = profile.height(r)
+    bias = 1e-3 * grid.dx
+    in_shell = (
+        (r <= profile.radius) & (axial > h + gap + bias) & (axial <= h + gap + thickness + bias)
+    )
+    solid_local = in_shell.clone()
+    if pattern is not None:
+        ang = math.radians(pattern_angle_deg)
+        pa = a * math.cos(ang) + b * math.sin(ang)
+        pb = -a * math.sin(ang) + b * math.cos(ang)
+        solid_local &= ~pattern.open_mask(pa, pb)
+    n_shell = int(in_shell.sum())
+    porosity = 1.0 - int(solid_local.sum()) / n_shell if n_shell else 0.0
+    occ = torch.zeros(grid.shape, dtype=torch.bool)
+    occ[sx, sy, sz] = solid_local
+    return occ, porosity
+
+
 def dome_solid(
     grid: Grid,
     center: Vec3,
