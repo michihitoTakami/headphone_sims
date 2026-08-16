@@ -28,6 +28,7 @@ from headphone_sims.fdtd.sources import (
 from headphone_sims.geometry import parametric
 from headphone_sims.geometry.mesh import load_mesh, voxelize
 from headphone_sims.geometry.parametric import (
+    AmtsHexCells,
     ChamferedSlots,
     FibonacciSpirals,
     HexHoles,
@@ -88,7 +89,7 @@ class DriverSpec:
 class FilterSpec:
     """Perforated plate between driver and ear."""
 
-    kind: Literal["hex", "slots", "rings", "fib", "solid"]
+    kind: Literal["hex", "slots", "rings", "fib", "amts", "solid"]
     standoff: float = 3e-3  # distance from driver plane toward the ear
     thickness: float = 1e-3
     radius: float | None = None  # default: driver radius + 2 mm
@@ -117,10 +118,19 @@ class FilterSpec:
     # all sound must pass through the holes). False = free-floating disc,
     # which lets sound diffract around the rim through the standoff gap.
     sealed: bool = True
-    hole_radius: float = 0.5e-3  # hex
-    pitch: float = 2e-3  # hex, slots
+    hole_radius: float = 0.5e-3  # hex; amts: tube/cavity radius
+    pitch: float = 2e-3  # hex, slots, amts
     slot_width: float = 1e-3  # slots
     rings: tuple[tuple[float, float], ...] = ()  # ring slits (r_in, r_out)
+    # amts (AMTS-style metamaterial insert, DCA Stealth/Expanse): a thick
+    # plate (`thickness` = max height) whose ear-side top slopes down to
+    # `amts_min_thickness` along the height axis, with alternating open
+    # through-tubes and necked Helmholtz cells on a hex lattice. Intended for
+    # shape="rect"; the reported porosity is not meaningful for this kind.
+    amts_min_thickness: float = 3e-3
+    amts_neck_radius: float = 1.2e-3
+    amts_neck_length: float = 1e-3
+    amts_bottom_wall: float = 1e-3
 
     def pattern(self) -> HolePattern | None:
         if self.kind == "hex":
@@ -136,6 +146,17 @@ class FilterSpec:
             return Slots(width=self.slot_width, pitch=self.pitch)
         if self.kind == "rings":
             return RingSlits(rings=self.rings)
+        if self.kind == "amts":
+            return AmtsHexCells(
+                tube_radius=self.hole_radius,
+                pitch=self.pitch,
+                slope_length=self.height,
+                min_thickness=self.amts_min_thickness,
+                max_thickness=self.thickness,
+                neck_radius=self.amts_neck_radius,
+                neck_length=self.amts_neck_length,
+                bottom_wall=self.amts_bottom_wall,
+            )
         if self.kind == "fib":
             return FibonacciSpirals(
                 rib_width=self.rib_width,

@@ -127,6 +127,80 @@ class ChamferedSlots(HolePattern):
 
 
 @dataclass(frozen=True)
+class AmtsHexCells(HolePattern):
+    """AMTS-style acoustic-metamaterial insert (Dan Clark Audio Stealth/Expanse).
+
+    A thick plate whose top (ear-side) surface slopes linearly along the
+    pattern a-axis from ``min_thickness`` to ``max_thickness``, carrying a
+    hexagonal lattice of circular cells of two alternating kinds:
+
+    - **through tubes** (lattice parity even): open bottom-to-top — waveguides
+      whose length varies with the slope (open-open resonances c/2L).
+    - **Helmholtz cells** (parity odd): closed by ``bottom_wall`` on the driver
+      side, a cavity of ``tube_radius`` up to ``neck_length`` below the local
+      top, then a narrowed neck of ``neck_radius`` — side-branch resonators
+      whose tuning sweeps along the slope.
+
+    Everything above the local sloped top is open air (the insert sits inside
+    the pad cavity). Use with a plate ``thickness == max_thickness``. NOTE:
+    the plate's reported porosity counts this carved-away air as "open", so it
+    is not meaningful for this pattern.
+    """
+
+    tube_radius: float
+    pitch: float
+    slope_length: float  # extent of the a-axis over which the top slopes
+    min_thickness: float
+    max_thickness: float
+    neck_radius: float = 1.2e-3
+    neck_length: float = 1.0e-3
+    bottom_wall: float = 1.0e-3
+
+    def _cells(self, a: torch.Tensor, b: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """(squared distance to nearest cell center, is-Helmholtz-cell)."""
+        row_h = self.pitch * math.sqrt(3.0) / 2.0
+        m0 = torch.round(b / row_h)
+        best = torch.full_like(a, float("inf"))
+        helm = torch.zeros_like(a, dtype=torch.bool)
+        for dm in (-1.0, 0.0, 1.0):
+            m = m0 + dm
+            b_row = m * row_h
+            m_int = m.to(torch.int64)
+            offset = torch.where(m_int % 2 == 0, 0.0, self.pitch / 2.0)
+            n = torch.round((a - offset) / self.pitch)
+            a_near = n * self.pitch + offset
+            d2 = (a - a_near) ** 2 + (b - b_row) ** 2
+            parity = (m_int + n.to(torch.int64)).remainder(2) == 1
+            closer = d2 < best
+            best = torch.where(closer, d2, best)
+            helm = torch.where(closer, parity, helm)
+        return best, helm
+
+    def open_mask(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        # 2D fallback: every cell shows its tube/cavity cross-section.
+        d2, _ = self._cells(a, b)
+        return d2 <= self.tube_radius**2
+
+    def open_mask_3d(
+        self, a: torch.Tensor, b: torch.Tensor, axial_frac: torch.Tensor
+    ) -> torch.Tensor:
+        h = (axial_frac + 0.5) * self.max_thickness  # height above the driver-side face
+        t = (a / self.slope_length + 0.5).clamp(0.0, 1.0)  # 0 = thin (-a), 1 = thick (+a)
+        z_top = self.min_thickness + (self.max_thickness - self.min_thickness) * t
+        above = h > z_top
+        d2, helm = self._cells(a, b)
+        in_tube = d2 <= self.tube_radius**2
+        in_neck = d2 <= self.neck_radius**2
+        through_open = ~helm & in_tube
+        helm_open = (
+            helm
+            & (h > self.bottom_wall)
+            & torch.where(h > z_top - self.neck_length, in_neck, in_tube)
+        )
+        return above | through_open | helm_open
+
+
+@dataclass(frozen=True)
 class RingSlits(HolePattern):
     """Concentric open annular slits given as (r_inner, r_outer) pairs."""
 
