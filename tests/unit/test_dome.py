@@ -445,3 +445,37 @@ def test_taper_width_keeps_edge_moving() -> None:
     assert w[mid_edge].min() > 0.9  # stiff edge keeps moving
     near_rim = lat > 33e-3
     assert w[near_rim].max() < 0.4  # clamp zone rolls off
+
+
+def test_tapered_volume_velocity_matches_analytic() -> None:
+    """Sum of baked z-face weights * dx^2 equals the analytic integral of the
+    amplitude field over the diaphragm area (the taper really is applied)."""
+    import dataclasses
+
+    import numpy as np
+
+    from headphone_sims.experiments.config import load_config
+
+    base = load_config("configs/hutubs_70mm_z1r_v2.yaml").scene
+    small = dataclasses.replace(
+        base,
+        dx=1.0e-3,
+        record_ms=0.1,
+        sponge_thickness=8,
+        lateral_margin=6e-3,
+        axial_margin=8e-3,
+        n_probes=20,
+        pinna=dataclasses.replace(base.pinna, kind="none", mesh_path=None),
+    )
+    built = build_scene(small, device="cpu")
+    src = built.simulation.baked_sources[0]
+    assert src.v_weight is not None
+    vv_sim = float(src.v_weight[2].sum()) * built.grid.dx**2
+    # analytic: integral of A(r) 2*pi*r dr with taper only over last 5mm
+    R = small.driver.diameter / 2.0
+    w = small.driver.taper_width
+    assert w is not None
+    r = np.linspace(0, R, 20000)
+    amp = np.where(r <= R - w, 1.0, np.cos(np.pi / 2 * np.clip((r - (R - w)) / w, 0, 1)) ** 2)
+    vv_ana = float(np.trapezoid(amp * 2 * np.pi * r, r))
+    assert vv_sim == pytest.approx(vv_ana, rel=0.08)

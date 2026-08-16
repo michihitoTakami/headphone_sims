@@ -80,7 +80,10 @@ def time_window(
 def normalized_max_crosscorr(x: FloatArray, y: FloatArray) -> tuple[float, int]:
     """Max of the normalized cross-correlation and its lag (samples).
 
-    1.0 means identical waveforms up to a pure delay and scale.
+    SHAPE ONLY: 1.0 means identical waveforms up to a pure delay and ANY
+    scale — a probe receiving almost no sound still scores high if the tiny
+    waveform has the right shape. Use :func:`amplitude_aware_match` when the
+    sound-pressure level matters (it almost always does).
     """
     ex = float(np.sqrt(np.sum(x**2)))
     ey = float(np.sqrt(np.sum(y**2)))
@@ -89,3 +92,31 @@ def normalized_max_crosscorr(x: FloatArray, y: FloatArray) -> tuple[float, int]:
     xc = np.correlate(x, y, mode="full") / (ex * ey)
     lag = int(np.argmax(xc)) - (len(y) - 1)
     return float(xc.max()), lag
+
+
+def amplitude_aware_match(x: FloatArray, y: FloatArray) -> float:
+    """Waveform match including amplitude: 2*max_tau(x*y_tau) / (|x|^2+|y|^2).
+
+    1.0 only if x equals y up to a pure delay INCLUDING scale; x = a*y gives
+    2a/(1+a^2) (e.g. -6 dB -> 0.80, -10 dB -> 0.58). Delay-invariant,
+    amplitude-sensitive.
+    """
+    ex = float(np.sum(x**2))
+    ey = float(np.sum(y**2))
+    if ex == 0.0 or ey == 0.0:
+        return 0.0
+    xc = np.correlate(x, y, mode="full")
+    return float(2.0 * xc.max() / (ex + ey))
+
+
+def onset_time(envelope_win: FloatArray, dt: float, threshold: float = 0.5) -> float:
+    """First time the (windowed) envelope exceeds ``threshold`` of its max.
+
+    Robust leading-edge arrival estimate — unlike the envelope peak, it is
+    stable for weak or multi-bump arrivals.
+    """
+    peak = float(envelope_win.max())
+    if peak <= 0.0:
+        return float("nan")
+    idx = int(np.argmax(envelope_win >= threshold * peak))
+    return idx * dt
