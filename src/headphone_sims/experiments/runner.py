@@ -129,6 +129,10 @@ def run_experiment(config: ExperimentConfig, run_dir: Path | None = None) -> Pat
         _save_signals(run_dir / "signals_nofilter.npz", ref_result)
         comparison = compare_runs(result, ref_result)
         payload["filter_comparison"] = comparison.summary()
+        ref_metrics = compute_metrics(
+            ref_result, ref_built.driver_center, ref_built.reference_index
+        )
+        payload["metrics_nofilter"] = ref_metrics.summary()
 
     (run_dir / "metrics.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
