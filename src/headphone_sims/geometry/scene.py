@@ -66,6 +66,11 @@ class DriverSpec:
     edge_height: float = 1e-3  # dome/surround junction height above the rim plane
     surround: Literal["roll", "cone"] = "roll"
     edge_roll_height: float | None = None  # rounded (donut) edge bump amplitude
+    # Width of the rim clamp zone for dome_drive="tapered". None = taper over
+    # the whole surround span (soft edge); a value (e.g. 5mm) confines the
+    # cos^2 roll-off to the last taper_width before the rim — the correct
+    # model for a stiff (pleated) edge that moves near-pistonically.
+    taper_width: float | None = None
     # "tapered" (default, the physical model): the coil-driven dome moves at
     # full amplitude and the rim-clamped surround's amplitude tapers smoothly
     # (cos^2) to zero at the rim. "full" = rigid translation (unphysical rim
@@ -509,9 +514,15 @@ def build_scene(
             drive_occ[keep[:, 0], keep[:, 1], keep[:, 2]] = True
         elif config.driver.dome_drive == "tapered":
             # Coil-driven dome at full amplitude; the rim-clamped surround
-            # tapers smoothly (cos^2) to zero at the rim.
-            span = max(r_driver - r_dome, grid.dx)
-            t = ((lateral - r_dome) / span).clamp(0.0, 1.0)
+            # tapers smoothly (cos^2) to zero at the rim — over the whole
+            # surround (soft edge) or only the last taper_width (stiff edge).
+            if config.driver.taper_width is not None:
+                span = max(config.driver.taper_width, grid.dx)
+                taper_start = r_driver - span
+            else:
+                span = max(r_driver - r_dome, grid.dx)
+                taper_start = r_dome
+            t = ((lateral - taper_start) / span).clamp(0.0, 1.0)
             amp = torch.cos(torch.pi / 2.0 * t) ** 2
             amp_field = torch.zeros(grid.shape, dtype=torch.float32)
             amp_field[idx_i[:, 0], idx_i[:, 1], idx_i[:, 2]] = amp.to(torch.float32)

@@ -409,3 +409,39 @@ def test_roll_height_makes_donut_edge() -> None:
         radius=35e-3, dome_fraction=0.43, dome_depth=6e-3, edge_height=3e-3, surround="cone"
     )
     assert float(legacy.height(torch.tensor([25e-3]))[0]) < 2e-3
+
+
+def test_taper_width_keeps_edge_moving() -> None:
+    """taper_width confines the roll-off to the rim: mid-edge stays ~full."""
+    import dataclasses
+
+    from headphone_sims.experiments.config import load_config
+
+    base = load_config("configs/hutubs_70mm_z1r_v2.yaml").scene
+    small = dataclasses.replace(
+        base,
+        dx=1.0e-3,
+        record_ms=0.1,
+        sponge_thickness=8,
+        lateral_margin=6e-3,
+        axial_margin=8e-3,
+        n_probes=20,
+        pinna=dataclasses.replace(base.pinna, kind="none", mesh_path=None),
+    )
+    built = build_scene(small, device="cpu")
+    src = built.simulation.baked_sources[0]
+    assert src.v_idx is not None and src.v_weight is not None
+    import numpy as np
+
+    grid = built.grid
+    shape = grid.velocity_shape(2)
+    idx = src.v_idx[2].numpy()
+    w = src.v_weight[2].numpy()
+    j = (idx // shape[2]) % shape[1]
+    i = idx // (shape[1] * shape[2])
+    dc = np.asarray(built.driver_center)
+    lat = np.hypot((i + 0.5) * grid.dx - dc[0], (j + 0.5) * grid.dx - dc[1])
+    mid_edge = (lat > 22e-3) & (lat < 28e-3)  # mid-surround, outside old taper
+    assert w[mid_edge].min() > 0.9  # stiff edge keeps moving
+    near_rim = lat > 33e-3
+    assert w[near_rim].max() < 0.4  # clamp zone rolls off

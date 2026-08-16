@@ -20,6 +20,7 @@ scene:
     edge_height: 3.0e-3
     surround: roll
     edge_roll_height: 3.0e-3
+    taper_width: 5.0e-3 # stiff pleated edge: only the last 5mm clamps to the rim
   filters:
     - kind: fib
       radius: 35.0e-3
