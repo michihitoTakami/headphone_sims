@@ -281,6 +281,10 @@ class DomeProfile:
     dome_depth: float = 5e-3
     edge_height: float = 1e-3
     surround: str = "roll"
+    # Raised-sine bump amplitude of the surround (the rounded, donut-like
+    # edge of e.g. the MDR-Z1R diaphragm). None keeps the legacy defaults:
+    # span/2 for "roll", 0 for "cone".
+    roll_height: float | None = None
 
     def __post_init__(self) -> None:
         if not 0.0 < self.dome_fraction < 1.0:
@@ -304,7 +308,10 @@ class DomeProfile:
         span = self.radius - r_d
         t = ((r - r_d) / span).clamp(0.0, 1.0)
         chord = self.edge_height * (1.0 - t)
-        bulge = span / 2.0 if self.surround == "roll" else 0.0
+        if self.roll_height is not None:
+            bulge = self.roll_height
+        else:
+            bulge = span / 2.0 if self.surround == "roll" else 0.0
         edge = chord + bulge * torch.sin(math.pi * t)
         h = torch.where(r <= r_d, cap, edge)
         return torch.where(r <= self.radius, h.clamp(min=0.0), torch.zeros_like(h))

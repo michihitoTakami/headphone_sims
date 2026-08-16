@@ -65,6 +65,7 @@ class DriverSpec:
     dome_depth: float = 5e-3  # apex height above the rim plane (total protrusion)
     edge_height: float = 1e-3  # dome/surround junction height above the rim plane
     surround: Literal["roll", "cone"] = "roll"
+    edge_roll_height: float | None = None  # rounded (donut) edge bump amplitude
     # "tapered" (default, the physical model): the coil-driven dome moves at
     # full amplitude and the rim-clamped surround's amplitude tapers smoothly
     # (cos^2) to zero at the rim. "full" = rigid translation (unphysical rim
@@ -276,6 +277,7 @@ def build_scene(
             dome_depth=config.driver.dome_depth,
             edge_height=config.driver.edge_height,
             surround=config.driver.surround,
+            roll_height=config.driver.edge_roll_height,
         )
         dome_occ = parametric.dome_solid(
             grid, driver_center, normal, dome_profile, base_depth=config.dx

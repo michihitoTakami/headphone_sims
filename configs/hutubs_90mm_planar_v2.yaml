@@ -1,0 +1,34 @@
+# LCD model v2 (realistic magnet scale): 8 bars across the 90mm axis
+# (pitch 11.25mm, bars 8.75mm wide running along the 65mm width), 22% open,
+# 10mm total structure = 5mm rectangular magnet + 5mm Fazor taper
+# (gap flares 2.5mm -> 8.5mm at the exit). Diaphragm-magnet gap 1mm.
+# Placement: minimum physical distance (structure front + 2mm) ~31mm from head.
+name: hutubs_90mm_planar_v2
+device: null
+compare_without_filters: true
+scene:
+  dx: 0.5e-3
+  distance: 13.0e-3
+  record_ms: 2.5
+  snapshot_every: 0
+  driver:
+    shape: rect
+    width: 65.0e-3
+    height: 90.0e-3
+    tilt_deg: 0.0
+  filters:
+    - kind: slots
+      shape: rect
+      width: 65.0e-3
+      height: 90.0e-3
+      slot_width: 2.5e-3
+      pitch: 11.25e-3
+      pattern_angle_deg: 0.0
+      thickness: 10.0e-3
+      standoff: 6.0e-3
+      chamfer_depth: 3.0e-3
+      chamfer_fraction: 0.5
+  pinna:
+    kind: mesh
+    mesh_path: data/hutubs/pp1_3DheadMesh.ply
+    side: left

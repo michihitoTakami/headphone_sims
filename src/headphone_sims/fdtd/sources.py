@@ -327,9 +327,7 @@ class RigidBodySource:
             flat = face.reshape(-1).nonzero(as_tuple=False).squeeze(1)
             idxs.append(flat)
             if amp is None:
-                weights.append(
-                    torch.full((flat.shape[0],), float(d[axis]), dtype=torch.float32)
-                )
+                weights.append(torch.full((flat.shape[0],), float(d[axis]), dtype=torch.float32))
             else:
                 # Amplitude of the moving-side cell (lo where the lo cell
                 # drives the face, else hi).

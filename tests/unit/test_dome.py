@@ -384,3 +384,28 @@ def test_tapered_drive_amplitude_profile() -> None:
         return float(sum(wi.abs().sum() for wi in (s.v_weight or ())))
 
     assert vv(src_dome) < vv(src) < vv(src_full)
+
+
+def test_roll_height_makes_donut_edge() -> None:
+    from headphone_sims.geometry.parametric import DomeProfile
+
+    p = DomeProfile(
+        radius=35e-3,
+        dome_fraction=0.43,
+        dome_depth=6e-3,
+        edge_height=3e-3,
+        surround="roll",
+        roll_height=3e-3,
+    )
+    r = torch.tensor([0.0, 15e-3, 25e-3, 34.9e-3])
+    h = p.height(r)
+    assert float(h[0]) == pytest.approx(6e-3, abs=1e-4)  # dome apex
+    crest = float(h[2])
+    assert crest > float(h[1]) - 1e-4 or crest > 4e-3  # rounded bump mid-edge
+    assert 4e-3 < crest < 5e-3
+    assert float(h[3]) < 1e-3  # falls to ~0 at the rim
+    # Backward compatibility: None keeps legacy amplitudes.
+    legacy = DomeProfile(
+        radius=35e-3, dome_fraction=0.43, dome_depth=6e-3, edge_height=3e-3, surround="cone"
+    )
+    assert float(legacy.height(torch.tensor([25e-3]))[0]) < 2e-3
