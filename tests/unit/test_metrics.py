@@ -66,7 +66,9 @@ def test_incoherent_field_is_diffuse() -> None:
     rng = np.random.default_rng(1)
     # Replace velocity with sign-flipping noise: p and v uncorrelated.
     result.v = rng.standard_normal(result.v.shape) * float(np.abs(result.p).max()) / RHO_C
-    m = compute_metrics(result, center, reference_index=0)
+    # band=None: this test exercises the diffuseness mechanics on white noise
+    # (band-limiting smooths the noise and partially decorrelates the test).
+    m = compute_metrics(result, center, reference_index=0, band=None)
     assert m.diffuseness.mean() > 0.7
 
 
@@ -103,3 +105,21 @@ def test_amplitude_scaling_penalized() -> None:
     assert m.similarity[5] == pytest.approx(2 * 0.5 / (1 + 0.25), abs=0.02)  # 0.80
     assert m.level_re_ref_db[5] == pytest.approx(-6.0, abs=0.3)
     assert m.summary()["level_min_db"] < -5.5
+
+
+def test_band_limit_ignores_ultrasonic_disturbance() -> None:
+    """A 16 kHz-only corruption must not affect 1-12.5 kHz band metrics."""
+    result, center = _plane_wave_result()
+    clean = compute_metrics(result, center, reference_index=0)
+    t = np.arange(result.p.shape[0]) * result.dt
+    result.p[:, 7] += (
+        0.8
+        * float(np.abs(result.p).max())
+        * np.sin(2 * np.pi * 16000 * t)
+        * np.exp(-0.5 * ((t - 1.05e-3) / 80e-6) ** 2)
+    )
+    corrupted = compute_metrics(result, center, reference_index=0)
+    assert corrupted.similarity[7] == pytest.approx(clean.similarity[7], abs=0.03)
+    # Full-band analysis DOES see it.
+    fullband = compute_metrics(result, center, reference_index=0, band=None, band_max=20000.0)
+    assert fullband.similarity[7] < clean.similarity[7] - 0.1

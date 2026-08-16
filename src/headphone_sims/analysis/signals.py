@@ -120,3 +120,27 @@ def onset_time(envelope_win: FloatArray, dt: float, threshold: float = 0.5) -> f
         return float("nan")
     idx = int(np.argmax(envelope_win >= threshold * peak))
     return idx * dt
+
+
+def bandpass_zero_phase(
+    x: FloatArray, dt: float, f_lo: float, f_hi: float, axis: int = 0
+) -> FloatArray:
+    """Zero-phase FFT band-pass with half-octave cosine edge tapers.
+
+    Used to band-limit metric analysis to the perceptually relevant range
+    (pinna spatial cues live mainly in ~4-12 kHz; >14 kHz contributes little).
+    """
+    x = np.moveaxis(x, axis, 0)
+    n = x.shape[0]
+    spec = np.fft.rfft(x, axis=0)
+    f = np.fft.rfftfreq(n, dt)
+    gain = np.ones_like(f)
+    lo_edge, hi_edge = f_lo / 2**0.25, f_hi * 2**0.25
+    ramp_lo = (f >= lo_edge) & (f < f_lo)
+    gain[f < lo_edge] = 0.0
+    gain[ramp_lo] = 0.5 - 0.5 * np.cos(np.pi * (f[ramp_lo] - lo_edge) / (f_lo - lo_edge))
+    ramp_hi = (f > f_hi) & (f <= hi_edge)
+    gain[f > hi_edge] = 0.0
+    gain[ramp_hi] = 0.5 + 0.5 * np.cos(np.pi * (f[ramp_hi] - f_hi) / (hi_edge - f_hi))
+    out = np.fft.irfft(spec * gain.reshape((-1,) + (1,) * (x.ndim - 1)), n=n, axis=0)
+    return np.moveaxis(out, 0, axis)

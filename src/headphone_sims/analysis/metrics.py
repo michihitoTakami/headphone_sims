@@ -95,14 +95,26 @@ def compute_metrics(
     window_pre: float = 0.2e-3,
     window_post: float = 0.5e-3,
     band_min: float = 1000.0,
-    band_max: float = 20_000.0,
+    band_max: float = 12_500.0,
+    band: tuple[float, float] | None = (1000.0, 12_500.0),
 ) -> PinnaMetrics:
+    """``band`` zero-phase band-limits p and v before all metrics — the
+    default 1-12.5 kHz drops the >14 kHz region, which contributes little to
+    spatial hearing (pinna cues live mainly in ~4-12 kHz). Pass None for the
+    legacy full-bandwidth behavior, or e.g. (5000, 10000) to focus on the
+    core spatial-cue band.
+    """
     center = np.asarray(driver_center, dtype=np.float64)
     n_probes = result.p.shape[1]
     t_geo, masks = _direct_window_masks(result, center, window_pre, window_post)
 
-    p_win = result.p * masks  # (n_steps, n)
-    v_win = result.v * masks[None]  # (3, n_steps, n)
+    p_all = result.p
+    v_all = result.v
+    if band is not None:
+        p_all = signals.bandpass_zero_phase(p_all, result.dt, band[0], band[1], axis=0)
+        v_all = signals.bandpass_zero_phase(v_all, result.dt, band[0], band[1], axis=1)
+    p_win = p_all * masks  # (n_steps, n)
+    v_win = v_all * masks[None]  # (3, n_steps, n)
 
     # (a) waveform match vs. reference probe: amplitude-aware (primary) and
     # shape-only (secondary), plus explicit level.
