@@ -69,6 +69,10 @@ class PinnaSpec:
     scale: float = 1.0  # e.g. 1e-3 if the mesh is in millimeters
     extra_rotation_deg: tuple[float, float, float] = (0.0, 0.0, 0.0)
     region_size: float = 90e-3
+    # Elliptical probe footprint (width x, height y) around the pinna center:
+    # probes are evaluated on the pinna itself, not the surrounding head skin.
+    # The geometry keeps the full region — only probe placement is restricted.
+    probe_region: tuple[float, float] = (42e-3, 72e-3)
 
 
 @dataclass(frozen=True)
@@ -239,11 +243,17 @@ def build_scene(
             extra_rotation_deg=config.pinna.extra_rotation_deg,
         )
         add_part("pinna", voxelize(placed, grid))
-        probes = surface_probes(
+        # Oversample the whole driver-facing surface, then keep only probes
+        # within the pinna footprint — the region mesh includes head skin
+        # around the ear, which should scatter sound but not be evaluated.
+        raw = surface_probes(
             placed,
-            config.n_probes,
+            config.n_probes * 4,
             offset=config.probe_offset,
             direction=(0.0, 0.0, -1.0),
+        )
+        probes = _filter_to_footprint(
+            raw, pinna_center, config.pinna.probe_region, config.n_probes
         )
     elif config.pinna.kind == "parametric":
         from headphone_sims.geometry.pinna import parametric_pinna
@@ -301,6 +311,25 @@ def build_scene(
     )
 
 
+def _filter_to_footprint(
+    probes: npt.NDArray[np.float64],
+    center: Vec3,
+    region: tuple[float, float],
+    n_max: int,
+) -> npt.NDArray[np.float64]:
+    """Keep probes inside the elliptical (width, height) footprint around
+    ``center`` in the x-y plane, capped at ``n_max`` points."""
+    half_w, half_h = region[0] / 2.0, region[1] / 2.0
+    d = ((probes[:, 0] - center[0]) / half_w) ** 2 + ((probes[:, 1] - center[1]) / half_h) ** 2
+    inside = probes[d <= 1.0]
+    if not len(inside):
+        raise ValueError(
+            "no surface probes fall inside the pinna footprint; check pinna "
+            "placement or widen pinna.probe_region"
+        )
+    return inside[:n_max]
+
+
 def _remove_probes_in_solid(
     probes: npt.NDArray[np.float64], solid: torch.Tensor, grid: Grid
 ) -> npt.NDArray[np.float64]:
@@ -355,9 +384,9 @@ def _parametric_pinna_probes(
     k = np.arange(n, dtype=np.float64) + 0.5
     r = np.sqrt(k / n)
     theta = k * 2.399963229728653
-    # Sample slightly beyond the pinna footprint to catch the surrounding field.
-    u = 1.25 * r * np.cos(theta)
-    v = 1.25 * r * np.sin(theta)
+    # Probes stay on the pinna footprint itself (evaluation is pinna-only).
+    u = r * np.cos(theta)
+    v = r * np.sin(theta)
     inside = u**2 + v**2 < 1.0
     z_surf = np.where(inside, -az * np.sqrt(np.clip(1.0 - u**2 - v**2, 0.0, 1.0)), 0.0)
     pts = np.zeros((n, 3))
