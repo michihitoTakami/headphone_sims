@@ -177,6 +177,11 @@ class SceneConfig:
     cup_depth: float = 0.0  # >0 adds a cylindrical cup behind the driver
     lateral_margin: float = 15e-3
     axial_margin: float = 20e-3
+    # Real headphones present a front face that is roughly FLUSH with the
+    # grille/magnet front (the driver assembly is not a sunken moat with a
+    # bare sealing wall). True raises the baffle around each sealed filter up
+    # to the filter's front plane ("housing" part).
+    housing_flange: bool = True
     sponge_thickness: int = 30
     n_probes: int = 400
     probe_offset: float = 1.5e-3
@@ -339,6 +344,19 @@ def build_scene(
                     length=spec.gap + spec.thickness + grid.dx,
                     thickness=2 * config.dx,
                 )
+                if config.housing_flange:
+                    r_b = config.baffle_radius or (r_driver + 10e-3)
+                    add_part(
+                        f"housing_{i + 1}",
+                        parametric.annular_collar(
+                            grid,
+                            driver_center,
+                            normal,
+                            radius=dome_profile.radius,
+                            length=spec.gap + spec.thickness + 2 * grid.dx,
+                            thickness=max(r_b - dome_profile.radius, 2 * config.dx),
+                        ),
+                    )
             add_part(f"filter_{i + 1}", occ)
             porosities.append(porosity)
             continue
@@ -371,6 +389,19 @@ def build_scene(
                     length=spec.standoff + spec.thickness / 2.0,
                     thickness=2 * config.dx,
                 )
+                if config.housing_flange:
+                    add_part(
+                        f"housing_{i + 1}",
+                        parametric.rect_collar(
+                            grid,
+                            driver_center,
+                            normal,
+                            width=spec.width,
+                            height=spec.height,
+                            length=spec.standoff + spec.thickness / 2.0 + grid.dx,
+                            thickness=10e-3,
+                        ),
+                    )
         else:
             r_filter = spec.radius or (r_driver + 2e-3)
             occ, porosity = parametric.plate(
@@ -391,6 +422,19 @@ def build_scene(
                     length=spec.standoff + spec.thickness / 2.0,
                     thickness=2 * config.dx,
                 )
+                if config.housing_flange:
+                    r_b = config.baffle_radius or (r_driver + 10e-3)
+                    add_part(
+                        f"housing_{i + 1}",
+                        parametric.annular_collar(
+                            grid,
+                            driver_center,
+                            normal,
+                            radius=r_filter,
+                            length=spec.standoff + spec.thickness / 2.0 + grid.dx,
+                            thickness=max(r_b - r_filter, 2 * config.dx),
+                        ),
+                    )
         add_part(f"filter_{i + 1}", occ)
         porosities.append(porosity)
 

@@ -37,3 +37,27 @@ def test_unsealed_plate_leaks_around_rim() -> None:
     built = build_scene(_config(sealed=False), device="cpu")
     result = built.simulation.run()
     assert float(np.abs(result.p).max()) > 0.0
+
+
+def test_housing_flange_is_flush_with_filter_front() -> None:
+    """housing_flange raises the face around the grille to its front plane."""
+
+    config = _config(sealed=True)
+    built = build_scene(config, device="cpu")
+    names = [n for n, _ in built.parts]
+    assert any(n.startswith("housing") for n in names)
+    grid = built.simulation.grid
+    dc = built.driver_center
+    # A point just outside the filter radius, below the filter-front plane,
+    # must now be solid (was open air = the shadowing moat).
+    r_filter = config.driver.diameter / 2.0 + 2e-3
+    i = int((dc[0] + r_filter + 3e-3) / grid.dx)
+    j = int(dc[1] / grid.dx)
+    k = int((dc[2] + 3e-3) / grid.dx)
+    assert bool(built.solid[i, j, k])
+    # No flange when disabled.
+    import dataclasses
+
+    built2 = build_scene(dataclasses.replace(config, housing_flange=False), device="cpu")
+    assert not any(n.startswith("housing") for n, _ in built2.parts)
+    assert not bool(built2.solid[i, j, k])
