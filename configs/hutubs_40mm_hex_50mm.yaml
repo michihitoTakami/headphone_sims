@@ -1,0 +1,24 @@
+# Same as hutubs_40mm_hex_matched but with a larger, 50mm-diameter grille
+# (radius 25mm), sealed to the baffle. 40mm driver, HUTUBS subject-1 pinna.
+name: hutubs_40mm_hex_50mm
+device: null
+compare_without_filters: true
+scene:
+  dx: 0.5e-3
+  distance: 15.0e-3
+  record_ms: 2.5
+  snapshot_every: 40
+  driver:
+    diameter: 40.0e-3
+    tilt_deg: 0.0
+  filters:
+    - kind: hex
+      radius: 25.0e-3 # 50mm diameter, larger than the 40mm driver
+      hole_radius: 0.5e-3
+      pitch: 2.0e-3
+      thickness: 1.0e-3
+      standoff: 3.0e-3
+  pinna:
+    kind: mesh
+    mesh_path: data/hutubs/pp1_3DheadMesh.ply
+    side: left

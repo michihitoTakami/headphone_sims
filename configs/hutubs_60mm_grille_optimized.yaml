@@ -1,0 +1,27 @@
+# Design C — large-aperture grille (60mm ~ pinna height) with the same
+# transparent hole spec as design B. Tests whether a larger sealed radiating
+# aperture flattens the wavefront across the pinna; expected cost: the 60mm
+# cavity's radial mode (~7.0 kHz) is excited by the non-uniform 40mm drive.
+name: hutubs_60mm_grille_optimized
+device: null
+compare_without_filters: true
+scene:
+  dx: 0.5e-3
+  distance: 15.0e-3
+  record_ms: 2.5
+  snapshot_every: 40
+  baffle_radius: 42.0e-3
+  driver:
+    diameter: 40.0e-3
+    tilt_deg: 0.0
+  filters:
+    - kind: hex
+      radius: 30.0e-3
+      hole_radius: 1.0e-3
+      pitch: 2.6e-3
+      thickness: 0.5e-3
+      standoff: 1.5e-3
+  pinna:
+    kind: mesh
+    mesh_path: data/hutubs/pp1_3DheadMesh.ply
+    side: left
