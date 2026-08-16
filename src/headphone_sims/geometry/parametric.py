@@ -101,6 +101,40 @@ class RingSlits(HolePattern):
         return mask
 
 
+@dataclass(frozen=True)
+class FibonacciSpirals(HolePattern):
+    """Crossing logarithmic-spiral ribs in Fibonacci counts (phyllotaxis
+    parastichy) — the MDR-Z1R-style grille: ``m_cw`` clockwise and ``m_ccw``
+    counterclockwise spirals of width ``rib_width`` leave open, outward-growing
+    cells. Non-periodic spacing (no single lattice pitch), high open ratio.
+
+    ``winding`` is the log-spiral slope b in theta = +/- b*ln(r); larger =
+    more tightly wound. Inside ``hub_radius`` the plate is open (the spiral
+    winding diverges toward the center).
+    """
+
+    rib_width: float = 1.0e-3
+    m_cw: int = 8
+    m_ccw: int = 13
+    winding: float = 0.9
+    hub_radius: float = 2.5e-3
+
+    def open_mask(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        r = torch.sqrt(a**2 + b**2).clamp(min=1e-9)
+        theta = torch.atan2(b, a)
+        log_r = torch.log(r / self.hub_radius)
+        solid = torch.zeros_like(a, dtype=torch.bool)
+        slant = math.sqrt(1.0 + self.winding**2)
+        for m, sign in ((self.m_cw, 1.0), (self.m_ccw, -1.0)):
+            period = 2.0 * math.pi / m
+            phase = torch.remainder(theta - sign * self.winding * log_r, period)
+            d_ang = torch.minimum(phase, period - phase)
+            perp = d_ang * r / slant  # perpendicular distance to the nearest rib
+            solid |= perp <= self.rib_width / 2.0
+        solid &= r >= self.hub_radius
+        return ~solid
+
+
 def plate(
     grid: Grid,
     center: Vec3,
@@ -123,7 +157,15 @@ def plate(
     a = dxv * u[0] + dyv * u[1] + dzv * u[2]
     b = dxv * w[0] + dyv * w[1] + dzv * w[2]
     radial2 = a**2 + b**2
-    in_disc = (axial.abs() <= thickness / 2.0) & (radial2 <= radius**2)
+    # Half-open slab interval with a sub-micron bias: when the plate mid-plane
+    # falls exactly on a cell boundary, float rounding could otherwise select
+    # zero layers (empty plate) or two. This picks exactly one, deterministically.
+    bias = 1e-3 * grid.dx
+    in_disc = (
+        (axial > -thickness / 2.0 + bias)
+        & (axial <= thickness / 2.0 + bias)
+        & (radial2 <= radius**2)
+    )
     solid_local = in_disc.clone()
     if pattern is not None:
         solid_local &= ~pattern.open_mask(a, b)

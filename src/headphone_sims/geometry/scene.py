@@ -21,7 +21,13 @@ from headphone_sims.fdtd.simulation import Simulation, SnapshotConfig
 from headphone_sims.fdtd.sources import PistonSource, Source, gaussian_modulated_sine
 from headphone_sims.geometry import parametric
 from headphone_sims.geometry.mesh import load_mesh, voxelize
-from headphone_sims.geometry.parametric import HexHoles, HolePattern, RingSlits, Slots
+from headphone_sims.geometry.parametric import (
+    FibonacciSpirals,
+    HexHoles,
+    HolePattern,
+    RingSlits,
+    Slots,
+)
 from headphone_sims.geometry.pinna import (
     extract_ear_region,
     find_ear_canal_entrance,
@@ -46,10 +52,15 @@ class DriverSpec:
 class FilterSpec:
     """Perforated plate between driver and ear."""
 
-    kind: Literal["hex", "slots", "rings", "solid"]
+    kind: Literal["hex", "slots", "rings", "fib", "solid"]
     standoff: float = 3e-3  # distance from driver plane toward the ear
     thickness: float = 1e-3
     radius: float | None = None  # default: driver radius + 2 mm
+    # fib (Fibonacci/phyllotaxis spiral web, MDR-Z1R style):
+    rib_width: float = 1.0e-3
+    spirals_cw: int = 8
+    spirals_ccw: int = 13
+    winding: float = 0.9
     # Seal the rim to the baffle with a cylindrical collar (realistic mounting:
     # all sound must pass through the holes). False = free-floating disc,
     # which lets sound diffract around the rim through the standoff gap.
@@ -66,6 +77,13 @@ class FilterSpec:
             return Slots(width=self.slot_width, pitch=self.pitch)
         if self.kind == "rings":
             return RingSlits(rings=self.rings)
+        if self.kind == "fib":
+            return FibonacciSpirals(
+                rib_width=self.rib_width,
+                m_cw=self.spirals_cw,
+                m_ccw=self.spirals_ccw,
+                winding=self.winding,
+            )
         return None  # solid
 
 
