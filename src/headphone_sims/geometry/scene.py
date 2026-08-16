@@ -99,6 +99,7 @@ class BuiltScene:
     driver_center: Vec3
     probe_positions: npt.NDArray[np.float64]
     reference_index: int  # probe used as the ear-canal-entrance reference
+    solid: torch.Tensor  # bool occupancy (CPU), for geometry visualization
     porosities: list[float] = field(default_factory=list)
 
 
@@ -282,6 +283,7 @@ def build_scene(
         driver_center=driver_center,
         probe_positions=probes,
         reference_index=ref,
+        solid=solid,
         porosities=porosities,
     )
 

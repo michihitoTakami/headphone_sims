@@ -22,6 +22,7 @@ from headphone_sims.experiments.config import ExperimentConfig, config_to_dict, 
 from headphone_sims.fdtd.simulation import SimulationResult
 from headphone_sims.geometry.scene import BuiltScene, build_scene
 from headphone_sims.viz.report import write_report
+from headphone_sims.viz.scene_view import save_scene_views
 from headphone_sims.viz.slices import save_slice_animation
 from headphone_sims.viz.surface import save_probe_heatmap
 
@@ -46,6 +47,13 @@ def _figures(
 ) -> list[Path]:
     report_dir = run_dir / "report"
     figs = [
+        save_scene_views(
+            built.solid,
+            result.dx,
+            built.driver_center,
+            metrics.probe_positions,
+            report_dir / "scene_geometry.png",
+        ),
         save_probe_heatmap(
             metrics.probe_positions,
             metrics.similarity,
