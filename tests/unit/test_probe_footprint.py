@@ -71,3 +71,26 @@ def test_hutubs_canal_on_interaural_axis() -> None:
     assert abs(canal[0]) < 2e-3
     assert abs(canal[2]) < 2e-3
     assert canal[1] < -0.05
+
+
+def test_driver_occluded_probes_removed() -> None:
+    import torch
+
+    from headphone_sims.geometry.scene import _remove_driver_occluded_probes
+    from headphone_sims.grid import Grid
+
+    grid = Grid.create((20, 20, 20), dx=1e-3)
+    occ = torch.zeros(grid.shape, dtype=torch.bool)
+    occ[8:12, 8:12, 10] = True  # thin plate at z = 10.5 mm
+    probes = np.array(
+        [
+            [10e-3, 10e-3, 8.0e-3],  # in front of the plate -> visible
+            [10e-3, 10e-3, 14.0e-3],  # behind the plate -> occluded
+            [2e-3, 2e-3, 14.0e-3],  # deep but off the plate column -> visible
+        ]
+    )
+    out = _remove_driver_occluded_probes(probes, occ, grid)
+    assert out.shape == (2, 3)
+    assert (out[:, 2] != 14.0e-3).any() or (out[:, 0] == 2e-3).any()
+    np.testing.assert_allclose(sorted(out[:, 2]), [8.0e-3, 14.0e-3])
+    assert not ((out[:, 0] == 10e-3) & (out[:, 2] == 14e-3)).any()

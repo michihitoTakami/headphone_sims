@@ -265,7 +265,8 @@ def build_scene(
         z_tip = float(placed.vertices[:, 2].min())
         placed.apply_translation([pinna_center[0], pinna_center[1], z_pinna - z_tip])
         canal_position = (pinna_center[0], pinna_center[1], z_pinna - z_tip)
-        add_part("pinna", voxelize(placed, grid))
+        pinna_occ = voxelize(placed, grid)
+        add_part("pinna", pinna_occ)
         probes = select_pinna_probes(
             placed,
             np.asarray(canal_position),
@@ -274,6 +275,9 @@ def build_scene(
             protrusion_threshold=config.pinna.probe_protrusion,
             concha_radius=config.pinna.concha_radius,
         )
+        # The 2D pinna mask cannot tell front from back surfaces sharing the
+        # same (x, y); drop probes the pinna itself hides from the driver.
+        probes = _remove_driver_occluded_probes(probes, pinna_occ, grid)
     elif config.pinna.kind == "parametric":
         from headphone_sims.geometry.pinna import parametric_pinna
 
@@ -329,6 +333,34 @@ def build_scene(
         porosities=porosities,
         parts=parts,
     )
+
+
+def _remove_driver_occluded_probes(
+    probes: npt.NDArray[np.float64],
+    occupancy: torch.Tensor,
+    grid: Grid,
+    margin: float = 1.0e-3,
+) -> npt.NDArray[np.float64]:
+    """Drop probes hidden from the driver (-z) by the given occupancy.
+
+    A probe on the back of the pinna always has pinna voxels in front of it
+    (smaller z in its own x-y column); a front-surface or concha probe does
+    not. ``margin`` tolerates the staircase around the probe's own surface.
+    """
+    occ = occupancy.numpy()
+    any_solid = occ.any(axis=2)
+    first_k = occ.argmax(axis=2)  # first solid cell along +z (0 where empty)
+    z_first = np.where(any_solid, (first_k + 0.5) * grid.dx, np.inf)
+    i = np.clip((probes[:, 0] / grid.dx - 0.5).round().astype(int), 0, grid.shape[0] - 1)
+    j = np.clip((probes[:, 1] / grid.dx - 0.5).round().astype(int), 0, grid.shape[1] - 1)
+    visible = z_first[i, j] >= probes[:, 2] - margin
+    if not visible.any():
+        raise ValueError("all probes are occluded from the driver; check the geometry")
+    n_dropped = int((~visible).sum())
+    if n_dropped:
+        print(f"dropped {n_dropped} probes occluded from the driver (back of pinna)")
+    out: npt.NDArray[np.float64] = probes[visible]
+    return out
 
 
 def _remove_probes_in_solid(
