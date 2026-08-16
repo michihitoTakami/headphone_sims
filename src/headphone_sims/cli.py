@@ -35,6 +35,24 @@ def _cmd_fetch_data(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_view3d(args: argparse.Namespace) -> int:
+    from headphone_sims.experiments.config import load_config
+    from headphone_sims.geometry.scene import build_scene
+    from headphone_sims.viz.structure3d import write_structure_viewer
+
+    config = load_config(args.config)
+    built = build_scene(config.scene, device="cpu")
+    out = args.output or f"{config.name}_3d.html"
+    path = write_structure_viewer(
+        built,
+        out,
+        title=f"{config.name} — シミュレーション構造 3D",
+        driver_radius_m=config.scene.driver.diameter / 2.0,
+    )
+    print(f"wrote {path} — open in a browser")
+    return 0
+
+
 def _cmd_bench(args: argparse.Namespace) -> int:
     import time
 
@@ -78,6 +96,11 @@ def main(argv: list[str] | None = None) -> int:
     p_fetch.add_argument("--subjects", nargs="*", help="HUTUBS numbers / VIKING letters")
     p_fetch.add_argument("--data-dir", default="data")
     p_fetch.set_defaults(func=_cmd_fetch_data)
+
+    p_view = sub.add_parser("view3d", help="write a 3D structure viewer HTML for a config")
+    p_view.add_argument("config", help="experiment YAML")
+    p_view.add_argument("-o", "--output", default=None, help="output HTML path")
+    p_view.set_defaults(func=_cmd_view3d)
 
     p_bench = sub.add_parser("bench", help="benchmark the FDTD kernel")
     p_bench.add_argument("--shape", type=int, nargs=3, default=[360, 360, 300])

@@ -101,6 +101,9 @@ class BuiltScene:
     reference_index: int  # probe used as the ear-canal-entrance reference
     solid: torch.Tensor  # bool occupancy (CPU), for geometry visualization
     porosities: list[float] = field(default_factory=list)
+    # Named per-part occupancy grids (baffle, filter_1, pinna, ...) for
+    # color-coded geometry visualization; their union equals ``solid``.
+    parts: list[tuple[str, torch.Tensor]] = field(default_factory=list)
 
 
 def _domain_grid(config: SceneConfig) -> tuple[Grid, Vec3, float]:
@@ -156,6 +159,12 @@ def build_scene(
 
     solid = torch.zeros(grid.shape, dtype=torch.bool)
     porosities: list[float] = []
+    parts: list[tuple[str, torch.Tensor]] = []
+
+    def add_part(name: str, occ_part: torch.Tensor) -> None:
+        nonlocal solid
+        parts.append((name, occ_part))
+        solid |= occ_part
 
     # The baffle, cup, and filters tilt together with the driver (one assembly).
     # The baffle sits far enough behind the source plane that its face masks
@@ -178,20 +187,23 @@ def build_scene(
             radius=r_baffle,
             thickness=2 * config.dx,
         )
-        solid |= occ
+        add_part("baffle", occ)
 
     if config.cup_depth > 0.0:
         r_baffle = config.baffle_radius or (r_driver + 10e-3)
-        solid |= parametric.cup_shell(
-            grid,
-            center=along_normal(driver_center, -1.0 * config.dx),
-            axis=(-normal[0], -normal[1], -normal[2]),
-            inner_radius=r_baffle,
-            depth=config.cup_depth,
-            thickness=2e-3,
+        add_part(
+            "cup",
+            parametric.cup_shell(
+                grid,
+                center=along_normal(driver_center, -1.0 * config.dx),
+                axis=(-normal[0], -normal[1], -normal[2]),
+                inner_radius=r_baffle,
+                depth=config.cup_depth,
+                thickness=2e-3,
+            ),
         )
 
-    for spec in config.filters:
+    for i, spec in enumerate(config.filters):
         r_filter = spec.radius or (r_driver + 2e-3)
         occ, porosity = parametric.plate(
             grid,
@@ -201,7 +213,7 @@ def build_scene(
             thickness=spec.thickness,
             pattern=spec.pattern(),
         )
-        solid |= occ
+        add_part(f"filter_{i + 1}", occ)
         porosities.append(porosity)
 
     pinna_center = (driver_center[0], driver_center[1], z_pinna)
@@ -226,7 +238,7 @@ def build_scene(
             lateral_axis=config.pinna.lateral_axis,
             extra_rotation_deg=config.pinna.extra_rotation_deg,
         )
-        solid |= voxelize(placed, grid)
+        add_part("pinna", voxelize(placed, grid))
         probes = surface_probes(
             placed,
             config.n_probes,
@@ -236,7 +248,7 @@ def build_scene(
     elif config.pinna.kind == "parametric":
         from headphone_sims.geometry.pinna import parametric_pinna
 
-        solid |= parametric_pinna(grid, pinna_center)
+        add_part("pinna", parametric_pinna(grid, pinna_center))
         # Head-surface plate behind the pinna (front face on the pinna plane).
         head_plate, _ = parametric.plate(
             grid,
@@ -245,7 +257,7 @@ def build_scene(
             radius=45e-3,
             thickness=2 * config.dx,
         )
-        solid |= head_plate
+        add_part("head", head_plate)
         probes = _parametric_pinna_probes(
             pinna_center, n=config.n_probes, offset=config.probe_offset
         )
@@ -285,6 +297,7 @@ def build_scene(
         reference_index=ref,
         solid=solid,
         porosities=porosities,
+        parts=parts,
     )
 
 
