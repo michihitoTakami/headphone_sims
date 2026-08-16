@@ -65,6 +65,10 @@ class DriverSpec:
     dome_depth: float = 5e-3  # apex height above the rim plane (total protrusion)
     edge_height: float = 1e-3  # dome/surround junction height above the rim plane
     surround: Literal["roll", "cone"] = "roll"
+    # "full" drives the whole diaphragm as one rigid body (low-frequency
+    # limit); "dome" drives only the central dome while the surround stays a
+    # static curved scatterer (high-frequency limit: edge decoupled).
+    dome_drive: Literal["full", "dome"] = "full"
 
     def half_extents(self) -> tuple[float, float]:
         """Lateral half extents (x, y) of the radiating surface."""
@@ -444,12 +448,27 @@ def build_scene(
     sources: list[Source]
     if config.driver.shape == "dome":
         assert dome_occ is not None
+        drive_occ: torch.Tensor | None = None
+        if config.driver.dome_drive == "dome":
+            # Cells within the dome rim radius, measured laterally from the
+            # driver axis (works for tilted drivers too).
+            idx = dome_occ.nonzero(as_tuple=False).to(torch.float64)
+            centers = (idx + 0.5) * grid.dx
+            rel = centers - torch.tensor(driver_center, dtype=torch.float64)
+            n_t = torch.tensor(normal, dtype=torch.float64)
+            axial = rel @ n_t
+            lateral = torch.linalg.vector_norm(rel - axial[:, None] * n_t, dim=1)
+            r_dome = config.driver.dome_fraction * r_driver + grid.dx
+            keep = idx[lateral <= r_dome].to(torch.int64)
+            drive_occ = torch.zeros_like(dome_occ)
+            drive_occ[keep[:, 0], keep[:, 1], keep[:, 2]] = True
         sources = [
             RigidBodySource(
                 occupancy=dome_occ,
                 solid=solid,
                 direction=normal,
                 waveform=waveform,
+                drive_occupancy=drive_occ,
             )
         ]
     elif config.driver.shape == "rect":

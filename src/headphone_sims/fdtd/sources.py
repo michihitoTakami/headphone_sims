@@ -282,6 +282,10 @@ class RigidBodySource:
     direction: Vec3  # motion axis (unnormalized ok)
     waveform: torch.Tensor
     hard: bool = True
+    # Optional subset of ``occupancy`` that actually moves (e.g. the central
+    # dome when the surround is decoupled at high frequency); the rest of the
+    # body stays a static rigid scatterer. None = the whole body moves.
+    drive_occupancy: torch.Tensor | None = None
 
     def bake(self, grid: Grid, device: torch.device) -> BakedSource:
         d = torch.tensor(self.direction, dtype=torch.float64)
@@ -292,6 +296,9 @@ class RigidBodySource:
         if tuple(self.occupancy.shape) != grid.shape or tuple(self.solid.shape) != grid.shape:
             raise ValueError("occupancy and solid must match grid.shape")
         blocked = self.solid | self.occupancy
+        drive = self.occupancy if self.drive_occupancy is None else self.drive_occupancy
+        if tuple(drive.shape) != grid.shape:
+            raise ValueError("drive_occupancy must match grid.shape")
 
         idxs: list[torch.Tensor] = []
         weights: list[torch.Tensor] = []
@@ -304,8 +311,8 @@ class RigidBodySource:
             hi = [slice(None)] * 3
             lo[axis] = slice(None, -1)
             hi[axis] = slice(1, None)
-            mov_lo = self.occupancy[tuple(lo)]
-            mov_hi = self.occupancy[tuple(hi)]
+            mov_lo = drive[tuple(lo)]
+            mov_hi = drive[tuple(hi)]
             blk_lo = blocked[tuple(lo)]
             blk_hi = blocked[tuple(hi)]
             face = (mov_lo & ~blk_hi) | (mov_hi & ~blk_lo)  # shape == velocity_shape(axis)

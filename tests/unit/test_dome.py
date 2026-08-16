@@ -292,3 +292,32 @@ def test_dome_scene_builds_and_registers_driver_part() -> None:
     assert "baffle" in names
     driver_occ = dict(built.parts)["driver"]
     assert int(driver_occ.sum()) > 0
+
+
+def test_dome_only_drive_restricts_faces() -> None:
+    """dome_drive="dome" drives fewer faces, all within the dome rim radius."""
+    import dataclasses
+
+    from headphone_sims.experiments.config import load_config
+
+    base = load_config("configs/hutubs_70mm_z1r_dome.yaml").scene
+    small = dataclasses.replace(
+        base,
+        dx=1.0e-3,
+        record_ms=0.1,
+        sponge_thickness=8,
+        lateral_margin=6e-3,
+        axial_margin=8e-3,
+        n_probes=20,
+        pinna=dataclasses.replace(base.pinna, kind="none", mesh_path=None),
+    )
+    full = build_scene(small, device="cpu")
+    dome_only = build_scene(
+        dataclasses.replace(small, driver=dataclasses.replace(small.driver, dome_drive="dome")),
+        device="cpu",
+    )
+    n_full = sum(i.numel() for i in full.simulation.baked_sources[0].v_idx or ())
+    n_dome = sum(i.numel() for i in dome_only.simulation.baked_sources[0].v_idx or ())
+    assert 0 < n_dome < n_full
+    # Roughly the dome's projected-area share of the total driven z-faces.
+    assert n_dome < 0.5 * n_full
