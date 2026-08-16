@@ -1,0 +1,54 @@
+# DCA model — 72x45mm planar driver (Expanse/E3-class, rect approximation of
+# the rounded-trapezoid diaphragm) with an AMTS-style metamaterial insert
+# between the magnet array and the ear.
+#
+# AMTS insert (photo-estimated from danclarkaudio.com amts.png): flanged part
+# whose ear-side top slopes ~3mm -> 15mm along the 72mm axis (thick end at +y),
+# hex lattice (pitch 4.5mm) of r=1.5mm cells, alternating:
+#   - open through-tubes: open-open waveguides, c/2L ~ 10-36 kHz along the slope
+#   - Helmholtz cells (1mm bottom wall, r=1.2mm x 1mm neck at the local top):
+#     side-branch resonators sweeping ~7 -> 25 kHz along the slope
+# NOTE: the reported porosity for the amts filter is meaningless (the carved
+# air above the sloped top counts as "open").
+#
+# Stack along the axis: diaphragm -> 1mm gap -> 4mm magnet bars ->
+# 1mm gap -> AMTS (bottom at 6mm, top at 21mm) -> 3mm to the pinna plane.
+name: hutubs_dca_amts
+device: null
+compare_without_filters: true
+scene:
+  dx: 0.5e-3
+  distance: 24.0e-3
+  record_ms: 2.5
+  snapshot_every: 0
+  driver:
+    shape: rect
+    width: 45.0e-3
+    height: 72.0e-3
+    tilt_deg: 0.0
+  filters:
+    - kind: slots           # magnet-bar array
+      shape: rect
+      width: 45.0e-3
+      height: 72.0e-3
+      slot_width: 2.5e-3
+      pitch: 6.5e-3
+      pattern_angle_deg: 0.0
+      thickness: 4.0e-3
+      standoff: 3.0e-3      # 1mm diaphragm-magnet gap
+    - kind: amts            # AMTS-style metamaterial insert
+      shape: rect
+      width: 45.0e-3
+      height: 72.0e-3
+      hole_radius: 1.5e-3   # tube/cavity radius
+      pitch: 4.5e-3
+      thickness: 15.0e-3    # max height (thick end)
+      amts_min_thickness: 3.0e-3
+      amts_neck_radius: 1.2e-3
+      amts_neck_length: 1.0e-3
+      amts_bottom_wall: 1.0e-3
+      standoff: 13.5e-3     # bottom face at 6mm from the diaphragm
+  pinna:
+    kind: mesh
+    mesh_path: data/hutubs/pp1_3DheadMesh.ply
+    side: left

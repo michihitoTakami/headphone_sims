@@ -26,6 +26,8 @@ _PART_STYLE: dict[str, tuple[str, str]] = {
     "pinna": ("ピンナ(耳介)", "#C98D6B"),
     "head": ("頭部表面", "#6E7F8D"),
     "housing_1": ("ハウジング前面", "#5A6672"),
+    "housing_2": ("ハウジング前面 2", "#4E5A66"),
+    "housing_3": ("ハウジング前面 3", "#42505C"),
 }
 _FALLBACK_COLORS = ["#8E9BAA", "#C4A25E", "#9A7FB1"]
 
