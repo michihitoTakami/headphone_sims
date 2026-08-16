@@ -403,6 +403,20 @@ def build_scene(
             pinna_center, radius=30e-3, n=config.n_probes, offset=config.probe_offset
         )
 
+    # A tilted/close driver assembly must not intersect the pinna or head.
+    if config.pinna.kind != "none":
+        pinna_solid = dict(parts).get("pinna")
+        if pinna_solid is not None:
+            for name, occ_part in parts:
+                if name == "pinna":
+                    continue
+                n_overlap = int((occ_part & pinna_solid).sum())
+                if n_overlap:
+                    raise ValueError(
+                        f"part '{name}' intersects the pinna/head in {n_overlap} cells — "
+                        "increase distance or reduce tilt"
+                    )
+
     # Drop probes that ended up inside (or trilinearly touching) solid voxels —
     # staircased surfaces can swallow surface-hugging probes.
     if probes_override is not None:

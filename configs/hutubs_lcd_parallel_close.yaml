@@ -1,0 +1,34 @@
+# Design G — same planar-magnetic driver as design F but with Fazor-style
+# chamfered magnet bars: the 3mm gaps flare to 6mm over the ear-side 2mm of
+# the bar depth (trapezoidal bar cross-section). Predicted: the acoustic neck
+# shortens (~5.5mm -> ~2.5mm effective), pushing the in-band Helmholtz
+# resonance (~13 kHz measured for F) up toward ~22 kHz.
+name: hutubs_lcd_parallel_close
+device: null
+compare_without_filters: true
+scene:
+  dx: 0.5e-3
+  distance: 10.0e-3
+  record_ms: 2.5
+  snapshot_every: 40
+  driver:
+    shape: rect
+    width: 65.0e-3
+    height: 90.0e-3
+    tilt_deg: -15.0
+  filters:
+    - kind: slots
+      shape: rect
+      width: 65.0e-3
+      height: 90.0e-3
+      slot_width: 3.0e-3
+      pitch: 7.0e-3
+      pattern_angle_deg: 90.0
+      thickness: 3.0e-3
+      standoff: 2.5e-3
+      chamfer_depth: 1.5e-3 # gap 3mm -> 6mm at the exit face
+      chamfer_fraction: 0.66 # chamfer over the ear-side 2mm of the 3mm depth
+  pinna:
+    kind: mesh
+    mesh_path: data/hutubs/pp1_3DheadMesh.ply
+    side: left
