@@ -1,5 +1,6 @@
 # HUTUBS subject 1 head mesh (fetch first: `headphone-sims fetch-data hutubs --subjects 1`).
-# HUTUBS meshes are in meters; if a mesh turns out to be in mm, set pinna.scale: 1.0e-3.
+# HUTUBS meshes are in meters; interaural axis is y (verified on pp1: ears at
+# y = -0.095 / +0.094). "side: left" means the negative-y ear.
 name: hutubs_pp1_hex
 device: null
 compare_without_filters: true

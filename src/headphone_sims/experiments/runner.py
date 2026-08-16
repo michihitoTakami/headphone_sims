@@ -114,7 +114,9 @@ def run_experiment(config: ExperimentConfig, run_dir: Path | None = None) -> Pat
 
     if config.compare_without_filters and config.scene.filters:
         ref_scene = dataclasses.replace(config.scene, filters=())
-        ref_built = build_scene(ref_scene, device=config.device)
+        ref_built = build_scene(
+            ref_scene, device=config.device, probes_override=built.probe_positions
+        )
         ref_result = ref_built.simulation.run()
         _save_signals(run_dir / "signals_nofilter.npz", ref_result)
         comparison = compare_runs(result, ref_result)

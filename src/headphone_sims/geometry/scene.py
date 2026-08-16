@@ -64,8 +64,8 @@ class FilterSpec:
 class PinnaSpec:
     kind: Literal["mesh", "parametric", "none"] = "parametric"
     mesh_path: str | None = None
-    side: Literal["left", "right"] = "left"
-    lateral_axis: int = 0
+    side: Literal["left", "right"] = "left"  # left = negative end of lateral_axis
+    lateral_axis: int = 1  # interaural axis of the mesh (HUTUBS: y)
     scale: float = 1.0  # e.g. 1e-3 if the mesh is in millimeters
     extra_rotation_deg: tuple[float, float, float] = (0.0, 0.0, 0.0)
     region_size: float = 90e-3
@@ -123,7 +123,13 @@ def _domain_grid(config: SceneConfig) -> tuple[Grid, Vec3, float]:
     return grid, (cx, cx, z_driver), z_pinna
 
 
-def build_scene(config: SceneConfig, device: str | None = None) -> BuiltScene:
+def build_scene(
+    config: SceneConfig,
+    device: str | None = None,
+    probes_override: npt.NDArray[np.float64] | None = None,
+) -> BuiltScene:
+    """Assemble a scene. ``probes_override`` reuses an existing probe layout
+    verbatim (for paired with/without-filter runs, which must share probes)."""
     grid, driver_center, z_pinna = _domain_grid(config)
     n_steps = int(np.ceil(config.record_ms * 1e-3 / grid.dt))
     r_driver = config.driver.diameter / 2.0
@@ -230,9 +236,29 @@ def build_scene(config: SceneConfig, device: str | None = None) -> BuiltScene:
         from headphone_sims.geometry.pinna import parametric_pinna
 
         solid |= parametric_pinna(grid, pinna_center)
-        probes = _disc_probes(pinna_center, radius=30e-3, n=config.n_probes)
+        # Head-surface plate behind the pinna (front face on the pinna plane).
+        head_plate, _ = parametric.plate(
+            grid,
+            (pinna_center[0], pinna_center[1], z_pinna + config.dx),
+            (0.0, 0.0, 1.0),
+            radius=45e-3,
+            thickness=2 * config.dx,
+        )
+        solid |= head_plate
+        probes = _parametric_pinna_probes(
+            pinna_center, n=config.n_probes, offset=config.probe_offset
+        )
     else:
-        probes = _disc_probes(pinna_center, radius=30e-3, n=config.n_probes)
+        probes = _disc_probes(
+            pinna_center, radius=30e-3, n=config.n_probes, offset=config.probe_offset
+        )
+
+    # Drop probes that ended up inside (or trilinearly touching) solid voxels —
+    # staircased surfaces can swallow surface-hugging probes.
+    if probes_override is not None:
+        probes = probes_override
+    else:
+        probes = _remove_probes_in_solid(probes, solid, grid)
 
     # Reference probe: closest to the nominal ear-canal entrance (pinna center).
     ref = int(np.argmin(np.linalg.norm(probes - np.asarray(pinna_center), axis=1)))
@@ -260,13 +286,73 @@ def build_scene(config: SceneConfig, device: str | None = None) -> BuiltScene:
     )
 
 
-def _disc_probes(center: Vec3, radius: float, n: int) -> npt.NDArray[np.float64]:
-    """Sunflower-spiral probe layout on the pinna reference plane."""
+def _remove_probes_in_solid(
+    probes: npt.NDArray[np.float64], solid: torch.Tensor, grid: Grid
+) -> npt.NDArray[np.float64]:
+    """Keep only probes whose 8 trilinear corner cells are all air."""
+    solid_np = solid.numpy()
+    keep = np.ones(len(probes), dtype=bool)
+    for i, pos in enumerate(probes):
+        base = np.floor(pos / grid.dx - 0.5).astype(int)
+        for corner in range(8):
+            idx = base + np.array([(corner >> 2) & 1, (corner >> 1) & 1, corner & 1])
+            idx = np.clip(idx, 0, np.array(grid.shape) - 1)
+            if solid_np[idx[0], idx[1], idx[2]]:
+                keep[i] = False
+                break
+    if not keep.any():
+        raise ValueError("all probes fall inside solid geometry")
+    if not keep.all():
+        print(f"dropped {int((~keep).sum())} probes inside solid geometry")
+    return probes[keep]
+
+
+def _disc_probes(
+    center: Vec3, radius: float, n: int, offset: float = 0.0
+) -> npt.NDArray[np.float64]:
+    """Sunflower-spiral probe layout on the pinna reference plane, shifted
+    ``offset`` toward the driver."""
     k = np.arange(n, dtype=np.float64) + 0.5
     r = radius * np.sqrt(k / n)
     theta = k * 2.399963229728653  # golden angle
     pts = np.zeros((n, 3))
     pts[:, 0] = center[0] + r * np.cos(theta)
     pts[:, 1] = center[1] + r * np.sin(theta)
-    pts[:, 2] = center[2]
+    pts[:, 2] = center[2] - offset
     return pts
+
+
+def _parametric_pinna_probes(
+    center: Vec3,
+    n: int,
+    offset: float,
+    height: float = 60e-3,
+    width: float = 35e-3,
+    protrusion: float = 18e-3,
+) -> npt.NDArray[np.float64]:
+    """Probes hugging the parametric pinna's driver-facing ellipsoid surface.
+
+    Must match the default geometry of
+    :func:`headphone_sims.geometry.pinna.parametric_pinna`. Points outside the
+    ellipse footprint sit just off the head-surface plane.
+    """
+    ax, ay, az = width / 2.0, height / 2.0, protrusion
+    k = np.arange(n, dtype=np.float64) + 0.5
+    r = np.sqrt(k / n)
+    theta = k * 2.399963229728653
+    # Sample slightly beyond the pinna footprint to catch the surrounding field.
+    u = 1.25 * r * np.cos(theta)
+    v = 1.25 * r * np.sin(theta)
+    inside = u**2 + v**2 < 1.0
+    z_surf = np.where(inside, -az * np.sqrt(np.clip(1.0 - u**2 - v**2, 0.0, 1.0)), 0.0)
+    pts = np.zeros((n, 3))
+    pts[:, 0] = u * ax
+    pts[:, 1] = v * ay
+    pts[:, 2] = z_surf
+    # Offset along the outward ellipsoid normal (on steep flanks a pure -z
+    # offset would stay inside the staircased shell), or -z off the footprint.
+    grad = np.stack([pts[:, 0] / ax**2, pts[:, 1] / ay**2, pts[:, 2] / az**2], axis=1)
+    grad[~inside] = [0.0, 0.0, -1.0]
+    grad /= np.linalg.norm(grad, axis=1, keepdims=True)
+    pts += offset * grad
+    return np.asarray(pts + np.asarray(center), dtype=np.float64)
