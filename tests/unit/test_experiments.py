@@ -64,3 +64,27 @@ def test_unknown_config_key_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="unknown"):
         load_config(path)
+
+
+def test_incident_only_removes_pinna_but_keeps_probes(tmp_path: Path) -> None:
+    import numpy as np
+    import yaml as _yaml
+
+    from headphone_sims.geometry.scene import build_scene
+
+    path = tmp_path / "tiny.yaml"
+    path.write_text(_yaml.safe_dump(TINY_CONFIG), encoding="utf-8")
+    scene = load_config(path).scene
+    normal = build_scene(scene, device="cpu")
+    incident = build_scene(scene, device="cpu", incident_only=True)
+    # Identical probe layout (derived from the pinna in both cases).
+    np.testing.assert_allclose(incident.probe_positions, normal.probe_positions)
+    # The simulation solid excludes the pinna/head parts.
+    pinna_cells = int(dict(normal.parts)["pinna"].sum())
+    assert pinna_cells > 0
+    mvx_normal = normal.simulation.state.mult_vx
+    mvx_incident = incident.simulation.state.mult_vx
+    assert mvx_normal is not None and mvx_incident is not None
+    n_solid_normal = int(mvx_normal.eq(0).sum())
+    n_solid_incident = int(mvx_incident.eq(0).sum())
+    assert n_solid_incident < n_solid_normal

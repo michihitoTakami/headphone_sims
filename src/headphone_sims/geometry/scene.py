@@ -216,9 +216,16 @@ def build_scene(
     config: SceneConfig,
     device: str | None = None,
     probes_override: npt.NDArray[np.float64] | None = None,
+    incident_only: bool = False,
 ) -> BuiltScene:
     """Assemble a scene. ``probes_override`` reuses an existing probe layout
-    verbatim (for paired with/without-filter runs, which must share probes)."""
+    verbatim (for paired with/without-filter runs, which must share probes).
+
+    ``incident_only=True`` builds the identical scene (same probes, derived
+    from the pinna as usual) but excludes the pinna/head solid from the
+    simulation, so the probes record the incident wavefront only — the
+    source-quality isolation protocol. Use a tight metrics window
+    (e.g. pre 0.1 ms / post 0.15 ms) to look at the arrival instant."""
     grid, driver_center, z_pinna = _domain_grid(config)
     n_steps = int(np.ceil(config.record_ms * 1e-3 / grid.dt))
     drv_hx, drv_hy = config.driver.half_extents()
@@ -445,6 +452,12 @@ def build_scene(
 
     # Sources are built after the parts so the dome source can see the final
     # `solid` (its faces are the dome's open boundary faces in the full scene).
+    sim_solid = solid
+    if incident_only:
+        sim_solid = torch.zeros(grid.shape, dtype=torch.bool)
+        for name, occ_part in parts:
+            if name != "pinna":
+                sim_solid |= occ_part
     sources: list[Source]
     if config.driver.shape == "dome":
         assert dome_occ is not None
@@ -465,7 +478,7 @@ def build_scene(
         sources = [
             RigidBodySource(
                 occupancy=dome_occ,
-                solid=solid,
+                solid=sim_solid,
                 direction=normal,
                 waveform=waveform,
                 drive_occupancy=drive_occ,
@@ -500,7 +513,7 @@ def build_scene(
         sources=sources,
         receivers=ReceiverArray(probes),
         n_steps=n_steps,
-        solid=solid,
+        solid=sim_solid,
         sponge=SpongeConfig(thickness=config.sponge_thickness),
         device=device,
         snapshot=snapshot,
