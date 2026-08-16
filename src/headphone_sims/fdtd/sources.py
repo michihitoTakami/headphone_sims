@@ -286,6 +286,11 @@ class RigidBodySource:
     # dome when the surround is decoupled at high frequency); the rest of the
     # body stays a static rigid scatterer. None = the whole body moves.
     drive_occupancy: torch.Tensor | None = None
+    # Optional per-cell velocity amplitude (grid.shape, float): a flexing
+    # surface such as a coil-driven dome with a rim-clamped surround whose
+    # amplitude tapers to zero. Each face uses the moving-side cell's value;
+    # None = uniform rigid motion.
+    amplitude_field: torch.Tensor | None = None
 
     def bake(self, grid: Grid, device: torch.device) -> BakedSource:
         d = torch.tensor(self.direction, dtype=torch.float64)
@@ -299,6 +304,9 @@ class RigidBodySource:
         drive = self.occupancy if self.drive_occupancy is None else self.drive_occupancy
         if tuple(drive.shape) != grid.shape:
             raise ValueError("drive_occupancy must match grid.shape")
+        amp = self.amplitude_field
+        if amp is not None and tuple(amp.shape) != grid.shape:
+            raise ValueError("amplitude_field must match grid.shape")
 
         idxs: list[torch.Tensor] = []
         weights: list[torch.Tensor] = []
@@ -318,7 +326,18 @@ class RigidBodySource:
             face = (mov_lo & ~blk_hi) | (mov_hi & ~blk_lo)  # shape == velocity_shape(axis)
             flat = face.reshape(-1).nonzero(as_tuple=False).squeeze(1)
             idxs.append(flat)
-            weights.append(torch.full((flat.shape[0],), float(d[axis]), dtype=torch.float32))
+            if amp is None:
+                weights.append(
+                    torch.full((flat.shape[0],), float(d[axis]), dtype=torch.float32)
+                )
+            else:
+                # Amplitude of the moving-side cell (lo where the lo cell
+                # drives the face, else hi).
+                amp_lo = amp[tuple(lo)].reshape(-1)[flat]
+                amp_hi = amp[tuple(hi)].reshape(-1)[flat]
+                from_lo = (mov_lo & ~blk_hi).reshape(-1)[flat]
+                a_face = torch.where(from_lo, amp_lo, amp_hi)
+                weights.append((float(d[axis]) * a_face).to(torch.float32))
         if all(i.numel() == 0 for i in idxs):
             raise ValueError("rigid body has no open boundary faces on this grid")
         baked = BakedSource(

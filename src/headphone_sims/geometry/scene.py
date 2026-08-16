@@ -65,10 +65,11 @@ class DriverSpec:
     dome_depth: float = 5e-3  # apex height above the rim plane (total protrusion)
     edge_height: float = 1e-3  # dome/surround junction height above the rim plane
     surround: Literal["roll", "cone"] = "roll"
-    # "full" drives the whole diaphragm as one rigid body (low-frequency
-    # limit); "dome" drives only the central dome while the surround stays a
-    # static curved scatterer (high-frequency limit: edge decoupled).
-    dome_drive: Literal["full", "dome"] = "full"
+    # "tapered" (default, the physical model): the coil-driven dome moves at
+    # full amplitude and the rim-clamped surround's amplitude tapers smoothly
+    # (cos^2) to zero at the rim. "full" = rigid translation (unphysical rim
+    # step, LF bound); "dome" = frozen surround (HF decoupling bound).
+    dome_drive: Literal["tapered", "full", "dome"] = "tapered"
 
     def half_extents(self) -> tuple[float, float]:
         """Lateral half extents (x, y) of the radiating surface."""
@@ -491,19 +492,27 @@ def build_scene(
     if config.driver.shape == "dome":
         assert dome_occ is not None
         drive_occ: torch.Tensor | None = None
+        amp_field: torch.Tensor | None = None
+        idx = dome_occ.nonzero(as_tuple=False).to(torch.float64)
+        cell_centers = (idx + 0.5) * grid.dx
+        rel = cell_centers - torch.tensor(driver_center, dtype=torch.float64)
+        n_t = torch.tensor(normal, dtype=torch.float64)
+        axial_c = rel @ n_t
+        lateral = torch.linalg.vector_norm(rel - axial_c[:, None] * n_t, dim=1)
+        r_dome = config.driver.dome_fraction * r_driver + grid.dx
+        idx_i = idx.to(torch.int64)
         if config.driver.dome_drive == "dome":
-            # Cells within the dome rim radius, measured laterally from the
-            # driver axis (works for tilted drivers too).
-            idx = dome_occ.nonzero(as_tuple=False).to(torch.float64)
-            centers = (idx + 0.5) * grid.dx
-            rel = centers - torch.tensor(driver_center, dtype=torch.float64)
-            n_t = torch.tensor(normal, dtype=torch.float64)
-            axial = rel @ n_t
-            lateral = torch.linalg.vector_norm(rel - axial[:, None] * n_t, dim=1)
-            r_dome = config.driver.dome_fraction * r_driver + grid.dx
-            keep = idx[lateral <= r_dome].to(torch.int64)
+            keep = idx_i[lateral <= r_dome]
             drive_occ = torch.zeros_like(dome_occ)
             drive_occ[keep[:, 0], keep[:, 1], keep[:, 2]] = True
+        elif config.driver.dome_drive == "tapered":
+            # Coil-driven dome at full amplitude; the rim-clamped surround
+            # tapers smoothly (cos^2) to zero at the rim.
+            span = max(r_driver - r_dome, grid.dx)
+            t = ((lateral - r_dome) / span).clamp(0.0, 1.0)
+            amp = torch.cos(torch.pi / 2.0 * t) ** 2
+            amp_field = torch.zeros(grid.shape, dtype=torch.float32)
+            amp_field[idx_i[:, 0], idx_i[:, 1], idx_i[:, 2]] = amp.to(torch.float32)
         sources = [
             RigidBodySource(
                 occupancy=dome_occ,
@@ -511,6 +520,7 @@ def build_scene(
                 direction=normal,
                 waveform=waveform,
                 drive_occupancy=drive_occ,
+                amplitude_field=amp_field,
             )
         ]
     elif config.driver.shape == "rect":

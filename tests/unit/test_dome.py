@@ -321,3 +321,66 @@ def test_dome_only_drive_restricts_faces() -> None:
     assert 0 < n_dome < n_full
     # Roughly the dome's projected-area share of the total driven z-faces.
     assert n_dome < 0.5 * n_full
+
+
+def test_tapered_drive_amplitude_profile() -> None:
+    """Tapered drive: full amplitude on the dome, monotonic decay on the
+    surround, ~0 at the rim, and volume velocity between dome-only and full."""
+    import dataclasses
+
+    import numpy as np
+
+    from headphone_sims.experiments.config import load_config
+
+    base = load_config("configs/hutubs_70mm_z1r_dome.yaml").scene
+    small = dataclasses.replace(
+        base,
+        dx=1.0e-3,
+        record_ms=0.1,
+        sponge_thickness=8,
+        lateral_margin=6e-3,
+        axial_margin=8e-3,
+        n_probes=20,
+        pinna=dataclasses.replace(base.pinna, kind="none", mesh_path=None),
+    )
+
+    from typing import Literal
+
+    from headphone_sims.fdtd.sources import BakedSource
+    from headphone_sims.geometry.scene import BuiltScene
+
+    def baked(drive: 'Literal["tapered", "full", "dome"]') -> tuple[BuiltScene, BakedSource]:
+        scene = dataclasses.replace(
+            small, driver=dataclasses.replace(small.driver, dome_drive=drive)
+        )
+        built = build_scene(scene, device="cpu")
+        return built, built.simulation.baked_sources[0]
+
+    built, src = baked("tapered")
+    assert src.v_idx is not None and src.v_weight is not None
+    # z-face weights vs lateral radius of the face.
+    grid = built.grid
+    idx = src.v_idx[2].numpy()
+    w = src.v_weight[2].numpy()
+    shape = grid.velocity_shape(2)
+    j = (idx // shape[2]) % shape[1]
+    i = idx // (shape[1] * shape[2])
+    x = (i + 0.5) * grid.dx
+    y = (j + 0.5) * grid.dx
+    dc = np.asarray(built.driver_center)
+    lat = np.hypot(x - dc[0], y - dc[1])
+    r_dome = small.driver.dome_fraction * small.driver.diameter / 2.0
+    on_dome = lat <= r_dome - 1e-3
+    near_rim = lat >= small.driver.diameter / 2.0 - 2e-3
+    assert w[on_dome].min() > 0.9  # full amplitude on the dome
+    assert w[near_rim].max() < 0.2  # ~zero at the clamped rim
+    mid = (lat > r_dome + 2e-3) & (lat < small.driver.diameter / 2.0 - 4e-3)
+    assert 0.05 < w[mid].mean() < 0.95  # smooth taper in between
+
+    _, src_dome = baked("dome")
+    _, src_full = baked("full")
+
+    def vv(s: BakedSource) -> float:
+        return float(sum(wi.abs().sum() for wi in (s.v_weight or ())))
+
+    assert vv(src_dome) < vv(src) < vv(src_full)
