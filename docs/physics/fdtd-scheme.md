@@ -40,6 +40,20 @@ upgrade if late-window metrics need a cleaner floor.
   2 J1(ka sin t)/(ka sin t) within 0.10 absolute up to 40 degrees at 10 kHz.
   A *soft* velocity source in free air radiates a dipole-like cos(theta)
   pattern instead — that is physics, not a bug.
+- `RectangularPistonSource`: same hard-source semantics over a width x height
+  rectangle (planar-magnetic diaphragm); height runs along scene +y.
+- `RigidBodySource`: a voxelized rigid body (e.g. a dome diaphragm) translating
+  along a fixed axis d. For pure translation every surface point moves with
+  the body, so the face carrying grid component `axis` is set to
+  `U(t) * d[axis]` — a **uniform weight per component**; the shape enters only
+  through which faces are selected (the body's open boundary faces in the full
+  scene solid), never through per-face normal weights. The open boundary z-face
+  count of a convex bump on a baffle equals its projected disc area, so the
+  total volume velocity equals the flat piston's (`U * pi R^2`) — dome and flat
+  runs are level-matched and agree at low frequency by construction. After the
+  waveform the faces clamp to zero: the body remains a rigid scatterer.
+  Direct-sound metrics windows use the rim-plane center; a dome arrives up to
+  `dome_depth/c` (~0.02 ms) early, well inside the 0.2 ms pre-window.
 
 ## Injection ordering
 

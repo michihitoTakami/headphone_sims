@@ -258,4 +258,69 @@ class RectangularPistonSource:
         return baked.to(device)
 
 
-Source = PointSource | PistonSource | RectangularPistonSource
+@dataclass(frozen=True)
+class RigidBodySource:
+    """Voxelized rigid body translating along ``direction``; the waveform is
+    the body's speed in m/s (e.g. a dome diaphragm oscillating on its axis).
+
+    For pure translation with velocity ``U(t) * d`` the boundary condition on
+    every surface point is the body's own velocity, so the face carrying grid
+    component ``axis`` takes the value ``U(t) * d[axis]`` — a uniform weight
+    per component. The body's shape enters only through *which* faces are
+    selected (the voxel staircase), never through per-face normal weights.
+
+    Faces are the body's open boundary faces: one adjacent cell inside
+    ``occupancy``, the other outside ``solid | occupancy`` — exactly the faces
+    the solid masks zero each step, which the hard overwrite then re-drives
+    (same mechanism as the flat piston-on-rigid-baffle model). With
+    ``hard=True`` the faces clamp to zero after the waveform ends, leaving the
+    body as a rigid scatterer.
+    """
+
+    occupancy: torch.Tensor  # bool, grid.shape: the moving body
+    solid: torch.Tensor  # bool, grid.shape: all scene solids (may include the body)
+    direction: Vec3  # motion axis (unnormalized ok)
+    waveform: torch.Tensor
+    hard: bool = True
+
+    def bake(self, grid: Grid, device: torch.device) -> BakedSource:
+        d = torch.tensor(self.direction, dtype=torch.float64)
+        norm = float(torch.linalg.vector_norm(d))
+        if norm == 0.0:
+            raise ValueError("rigid body direction must be non-zero")
+        d = d / norm
+        if tuple(self.occupancy.shape) != grid.shape or tuple(self.solid.shape) != grid.shape:
+            raise ValueError("occupancy and solid must match grid.shape")
+        blocked = self.solid | self.occupancy
+
+        idxs: list[torch.Tensor] = []
+        weights: list[torch.Tensor] = []
+        for axis in range(3):
+            if abs(float(d[axis])) < 1e-12:
+                idxs.append(torch.zeros(0, dtype=torch.int64))
+                weights.append(torch.zeros(0, dtype=torch.float32))
+                continue
+            lo = [slice(None)] * 3
+            hi = [slice(None)] * 3
+            lo[axis] = slice(None, -1)
+            hi[axis] = slice(1, None)
+            mov_lo = self.occupancy[tuple(lo)]
+            mov_hi = self.occupancy[tuple(hi)]
+            blk_lo = blocked[tuple(lo)]
+            blk_hi = blocked[tuple(hi)]
+            face = (mov_lo & ~blk_hi) | (mov_hi & ~blk_lo)  # shape == velocity_shape(axis)
+            flat = face.reshape(-1).nonzero(as_tuple=False).squeeze(1)
+            idxs.append(flat)
+            weights.append(torch.full((flat.shape[0],), float(d[axis]), dtype=torch.float32))
+        if all(i.numel() == 0 for i in idxs):
+            raise ValueError("rigid body has no open boundary faces on this grid")
+        baked = BakedSource(
+            waveform=self.waveform,
+            v_idx=(idxs[0], idxs[1], idxs[2]),
+            v_weight=(weights[0], weights[1], weights[2]),
+            hard=self.hard,
+        )
+        return baked.to(device)
+
+
+Source = PointSource | PistonSource | RectangularPistonSource | RigidBodySource

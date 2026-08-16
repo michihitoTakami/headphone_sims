@@ -17,6 +17,7 @@ import numpy as np
 from headphone_sims.geometry.scene import BuiltScene
 
 _PART_STYLE: dict[str, tuple[str, str]] = {
+    "driver": ("振動板(ドーム)", "#5B8DD9"),
     "baffle": ("バッフル壁", "#93A3B2"),
     "cup": ("イヤカップ", "#7D6B5A"),
     "filter_1": ("フィルタ 1", "#E08A4C"),
