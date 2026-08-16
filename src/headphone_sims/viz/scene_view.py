@@ -12,10 +12,10 @@ from pathlib import Path
 import matplotlib
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np  # noqa: E402
-import numpy.typing as npt  # noqa: E402
-import torch  # noqa: E402
+import matplotlib.pyplot as plt
+import numpy as np
+import numpy.typing as npt
+import torch
 
 FloatArray = npt.NDArray[np.float64]
 
@@ -33,10 +33,10 @@ def save_scene_views(
     Probes within ``slab_half_width`` of each slice plane are drawn on it.
     """
     occ = solid.cpu().numpy()
-    center_idx = [int(round(c / dx)) for c in driver_center]
+    center_idx = [round(c / dx) for c in driver_center]
     shape = occ.shape
 
-    k_front = min(int(round((driver_center[2] + 2e-3) / dx)), shape[2] - 1)
+    k_front = min(round((driver_center[2] + 2e-3) / dx), shape[2] - 1)
     views = [
         ("y-z (side)", occ[center_idx[0], :, :], (1, 2)),
         ("x-z (top)", occ[:, center_idx[1], :], (0, 2)),
