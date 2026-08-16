@@ -95,3 +95,27 @@ def test_rect_collar_is_hollow_frame() -> None:
     assert int(occ.sum()) > 0
     # Interior stays open.
     assert not bool(occ[40, 50, 12])
+
+
+def test_chamfered_slots_flare_toward_exit() -> None:
+    from headphone_sims.geometry.parametric import ChamferedSlots
+
+    grid = Grid.create((160, 220, 40), dx=0.5e-3)
+    occ, _porosity = rect_plate(
+        grid,
+        (40e-3, 55e-3, 10e-3),
+        (0.0, 0.0, 1.0),
+        width=65e-3,
+        height=90e-3,
+        thickness=3e-3,
+        pattern=ChamferedSlots(width=3e-3, pitch=7e-3, chamfer_depth=1.5e-3),
+        pattern_angle_deg=90.0,
+    )
+    # Plate spans z = 8.5..11.5mm -> k = 17..22. Exit (ear) side is high z.
+    throat = occ[40:120, 60:160, 17]
+    exit_face = occ[40:120, 60:160, 22]
+    p_throat = 1.0 - float(throat.float().mean())
+    p_exit = 1.0 - float(exit_face.float().mean())
+    assert p_throat == pytest.approx(3.0 / 7.0, abs=0.06)
+    assert p_exit == pytest.approx(6.0 / 7.0, abs=0.08)  # gap flares 3mm -> 6mm
+    assert p_exit > p_throat + 0.2

@@ -53,6 +53,13 @@ class HolePattern:
     def open_mask(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError
 
+    def open_mask_3d(
+        self, a: torch.Tensor, b: torch.Tensor, axial_frac: torch.Tensor
+    ) -> torch.Tensor:
+        """3D-aware openness; ``axial_frac`` in [-0.5, 0.5], +0.5 = exit (ear)
+        face. Default: extrude the 2D pattern through the thickness."""
+        return self.open_mask(a, b)
+
 
 @dataclass(frozen=True)
 class HexHoles(HolePattern):
@@ -85,6 +92,38 @@ class Slots(HolePattern):
     def open_mask(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         frac = torch.remainder(a + self.pitch / 2.0, self.pitch) - self.pitch / 2.0
         return frac.abs() <= self.width / 2.0
+
+
+@dataclass(frozen=True)
+class ChamferedSlots(HolePattern):
+    """Slots between magnet bars whose exit side is chamfered (Fazor-style).
+
+    The gap is ``width`` for the straight throat (diaphragm side) and flares
+    linearly to ``width + 2*chamfer_depth`` at the exit face over the last
+    ``chamfer_fraction`` of the plate thickness — the bar cross-section
+    becomes a trapezoid, shortening the acoustic neck and easing the exit
+    discontinuity.
+    """
+
+    width: float
+    pitch: float
+    chamfer_depth: float
+    chamfer_fraction: float = 0.66
+
+    def open_mask(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        # 2D fallback: the throat profile.
+        frac = torch.remainder(a + self.pitch / 2.0, self.pitch) - self.pitch / 2.0
+        return frac.abs() <= self.width / 2.0
+
+    def open_mask_3d(
+        self, a: torch.Tensor, b: torch.Tensor, axial_frac: torch.Tensor
+    ) -> torch.Tensor:
+        t_norm = (axial_frac + 0.5).clamp(0.0, 1.0)  # 0 = diaphragm side, 1 = exit
+        start = 1.0 - self.chamfer_fraction
+        flare = ((t_norm - start) / self.chamfer_fraction).clamp(min=0.0)
+        half_gap = self.width / 2.0 + self.chamfer_depth * flare
+        frac = torch.remainder(a + self.pitch / 2.0, self.pitch) - self.pitch / 2.0
+        return frac.abs() <= half_gap
 
 
 @dataclass(frozen=True)
@@ -172,7 +211,7 @@ def plate(
         ang = math.radians(pattern_angle_deg)
         pa = a * math.cos(ang) + b * math.sin(ang)
         pb = -a * math.sin(ang) + b * math.cos(ang)
-        solid_local &= ~pattern.open_mask(pa, pb)
+        solid_local &= ~pattern.open_mask_3d(pa, pb, axial / thickness)
     n_disc = int(in_disc.sum())
     porosity = 1.0 - int(solid_local.sum()) / n_disc if n_disc else 0.0
 
@@ -216,7 +255,7 @@ def rect_plate(
         ang = math.radians(pattern_angle_deg)
         pa = a * math.cos(ang) + b * math.sin(ang)
         pb = -a * math.sin(ang) + b * math.cos(ang)
-        solid_local &= ~pattern.open_mask(pa, pb)
+        solid_local &= ~pattern.open_mask_3d(pa, pb, axial / thickness)
     n_rect = int(in_rect.sum())
     porosity = 1.0 - int(solid_local.sum()) / n_rect if n_rect else 0.0
     occ = torch.zeros(grid.shape, dtype=torch.bool)

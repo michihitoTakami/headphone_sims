@@ -27,6 +27,7 @@ from headphone_sims.fdtd.sources import (
 from headphone_sims.geometry import parametric
 from headphone_sims.geometry.mesh import load_mesh, voxelize
 from headphone_sims.geometry.parametric import (
+    ChamferedSlots,
     FibonacciSpirals,
     HexHoles,
     HolePattern,
@@ -79,6 +80,11 @@ class FilterSpec:
     width: float = 65e-3
     height: float = 90e-3
     pattern_angle_deg: float = 0.0
+    # Fazor-style chamfer for kind="slots": >0 flares the gap toward the ear
+    # over the exit `chamfer_fraction` of the thickness (bar cross-section
+    # becomes trapezoidal), shortening the acoustic neck.
+    chamfer_depth: float = 0.0
+    chamfer_fraction: float = 0.66
     # fib (Fibonacci/phyllotaxis spiral web, MDR-Z1R style):
     rib_width: float = 1.0e-3
     spirals_cw: int = 8
@@ -97,6 +103,13 @@ class FilterSpec:
         if self.kind == "hex":
             return HexHoles(hole_radius=self.hole_radius, pitch=self.pitch)
         if self.kind == "slots":
+            if self.chamfer_depth > 0.0:
+                return ChamferedSlots(
+                    width=self.slot_width,
+                    pitch=self.pitch,
+                    chamfer_depth=self.chamfer_depth,
+                    chamfer_fraction=self.chamfer_fraction,
+                )
             return Slots(width=self.slot_width, pitch=self.pitch)
         if self.kind == "rings":
             return RingSlits(rings=self.rings)
