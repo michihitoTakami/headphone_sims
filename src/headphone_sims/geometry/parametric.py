@@ -263,6 +263,84 @@ def rect_plate(
     return occ, porosity
 
 
+@dataclass(frozen=True)
+class DomeProfile:
+    """Axisymmetric diaphragm height profile z(r): spherical-cap dome plus a
+    surround segment out to the rim, measured above the rim plane.
+
+    The dome is the spherical cap through the apex ``(0, dome_depth)`` and the
+    dome/surround junction ``(r_d, edge_height)`` with ``r_d = dome_fraction *
+    radius``. The surround is the chord from the junction down to ``(radius,
+    0)`` plus a raised-sine bump: half the surround width for ``"roll"`` (a
+    roll-edge look, single-valued), zero for ``"cone"`` (a straight sloped
+    edge, e.g. a wide ribbed LCP annulus in axisymmetric approximation).
+    """
+
+    radius: float
+    dome_fraction: float = 0.85
+    dome_depth: float = 5e-3
+    edge_height: float = 1e-3
+    surround: str = "roll"
+
+    def __post_init__(self) -> None:
+        if not 0.0 < self.dome_fraction < 1.0:
+            raise ValueError(f"dome_fraction must be in (0, 1), got {self.dome_fraction}")
+        if self.dome_depth <= 0.0:
+            raise ValueError(f"dome_depth must be positive, got {self.dome_depth}")
+        if not 0.0 <= self.edge_height < self.dome_depth:
+            raise ValueError(
+                f"edge_height must be in [0, dome_depth), got {self.edge_height} "
+                f"vs dome_depth {self.dome_depth}"
+            )
+        if self.surround not in ("roll", "cone"):
+            raise ValueError(f"surround must be 'roll' or 'cone', got {self.surround!r}")
+
+    def height(self, r: torch.Tensor) -> torch.Tensor:
+        """Profile height above the rim plane; 0 outside the rim."""
+        r_d = self.dome_fraction * self.radius
+        sag = self.dome_depth - self.edge_height  # cap rise over the dome span
+        r_curv = (r_d**2 + sag**2) / (2.0 * sag)
+        cap = self.dome_depth - (r_curv - torch.sqrt((r_curv**2 - r**2).clamp(min=0.0)))
+        span = self.radius - r_d
+        t = ((r - r_d) / span).clamp(0.0, 1.0)
+        chord = self.edge_height * (1.0 - t)
+        bulge = span / 2.0 if self.surround == "roll" else 0.0
+        edge = chord + bulge * torch.sin(math.pi * t)
+        h = torch.where(r <= r_d, cap, edge)
+        return torch.where(r <= self.radius, h.clamp(min=0.0), torch.zeros_like(h))
+
+
+def dome_solid(
+    grid: Grid,
+    center: Vec3,
+    normal: Vec3,
+    profile: DomeProfile,
+    base_depth: float,
+) -> torch.Tensor:
+    """Filled rigid dome diaphragm: local axial in ``(-base_depth, z(r)]``
+    for r <= radius. ``center`` is the rim-plane center; the dome bulges
+    toward ``normal``. ``base_depth`` (typically one cell) sinks the base
+    into the baffle behind it so the moving body has no rear air-adjacent
+    faces. Filled (not a shell), hence airtight by construction.
+    """
+    n, u, w = _local_frame(normal)
+    half = profile.radius + profile.dome_depth + base_depth + 2 * grid.dx
+    (sx, sy, sz), gx, gy, gz = _subbox(grid, center, half)
+    dxv = gx - center[0]
+    dyv = gy - center[1]
+    dzv = gz - center[2]
+    axial = dxv * n[0] + dyv * n[1] + dzv * n[2]
+    a = dxv * u[0] + dyv * u[1] + dzv * u[2]
+    b = dxv * w[0] + dyv * w[1] + dzv * w[2]
+    r = torch.sqrt(a**2 + b**2)
+    h = profile.height(r)
+    bias = 1e-3 * grid.dx  # same deterministic half-open interval as plate()
+    inside = (r <= profile.radius) & (axial > -base_depth + bias) & (axial <= h + bias)
+    occ = torch.zeros(grid.shape, dtype=torch.bool)
+    occ[sx, sy, sz] = inside
+    return occ
+
+
 def rect_collar(
     grid: Grid,
     center: Vec3,

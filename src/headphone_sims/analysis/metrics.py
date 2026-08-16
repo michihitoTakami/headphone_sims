@@ -64,6 +64,9 @@ def _direct_window_masks(
     pre: float,
     post: float,
 ) -> tuple[FloatArray, npt.NDArray[np.bool_]]:
+    # t_geo is measured from the driver rim-plane center; a dome diaphragm
+    # radiates from up to dome_depth closer (<= ~0.02 ms early), well inside
+    # `pre`, so the window still captures the direct sound.
     r = np.linalg.norm(result.positions - driver_center, axis=1)
     t_geo = r / SOUND_SPEED
     n_steps = result.p.shape[0]

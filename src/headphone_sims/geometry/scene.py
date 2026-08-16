@@ -21,6 +21,7 @@ from headphone_sims.fdtd.simulation import Simulation, SnapshotConfig
 from headphone_sims.fdtd.sources import (
     PistonSource,
     RectangularPistonSource,
+    RigidBodySource,
     Source,
     gaussian_modulated_sine,
 )
@@ -54,9 +55,16 @@ class DriverSpec:
     bandwidth_frequency: float = 9_900.0
     # Rectangular (planar-magnetic) diaphragm: shape="rect" uses width x height
     # (height runs along scene y, i.e. along the pinna) and ignores diameter.
-    shape: Literal["disc", "rect"] = "disc"
+    shape: Literal["disc", "rect", "dome"] = "disc"
     width: float = 65e-3
     height: float = 90e-3
+    # Dome diaphragm (shape="dome"): voxelized rigid spherical-cap dome plus
+    # surround, bulging toward the ear, driven as a rigid body along the
+    # driver axis. See parametric.DomeProfile for the profile definition.
+    dome_fraction: float = 0.85  # dome rim radius / driver radius
+    dome_depth: float = 5e-3  # apex height above the rim plane (total protrusion)
+    edge_height: float = 1e-3  # dome/surround junction height above the rim plane
+    surround: Literal["roll", "cone"] = "roll"
 
     def half_extents(self) -> tuple[float, float]:
         """Lateral half extents (x, y) of the radiating surface."""
@@ -221,28 +229,6 @@ def build_scene(
         center_frequency=config.driver.center_frequency,
         bandwidth_frequency=config.driver.bandwidth_frequency,
     )
-    sources: list[Source]
-    if config.driver.shape == "rect":
-        sources = [
-            RectangularPistonSource(
-                center=driver_center,
-                normal=normal,
-                width=config.driver.width,
-                height=config.driver.height,
-                waveform=waveform,
-            )
-        ]
-    else:
-        sources = [
-            PistonSource(
-                center=driver_center,
-                normal=normal,
-                radius=r_driver,
-                inner_radius=config.driver.inner_diameter / 2.0,
-                waveform=waveform,
-            )
-        ]
-
     solid = torch.zeros(grid.shape, dtype=torch.bool)
     porosities: list[float] = []
     parts: list[tuple[str, torch.Tensor]] = []
@@ -261,6 +247,24 @@ def build_scene(
     def along_normal(base: Vec3, offset: float) -> Vec3:
         p = np.asarray(base) + offset * nvec
         return (float(p[0]), float(p[1]), float(p[2]))
+
+    # Dome diaphragm: a voxelized rigid part whose open boundary faces carry
+    # the velocity source (built at the end, once `solid` is final). Register
+    # it before the baffle so the viewer's first-id-wins face ownership colors
+    # the base/baffle overlap as driver.
+    dome_occ: torch.Tensor | None = None
+    if config.driver.shape == "dome":
+        dome_profile = parametric.DomeProfile(
+            radius=r_driver,
+            dome_fraction=config.driver.dome_fraction,
+            dome_depth=config.driver.dome_depth,
+            edge_height=config.driver.edge_height,
+            surround=config.driver.surround,
+        )
+        dome_occ = parametric.dome_solid(
+            grid, driver_center, normal, dome_profile, base_depth=config.dx
+        )
+        add_part("driver", dome_occ)
 
     if config.baffle:
         # Wall front surface on the driver plane: the hard piston faces are
@@ -290,6 +294,14 @@ def build_scene(
         )
 
     for i, spec in enumerate(config.filters):
+        if config.driver.shape == "dome" and (
+            spec.standoff - spec.thickness / 2.0 <= config.driver.dome_depth + config.dx
+        ):
+            raise ValueError(
+                f"filter {i + 1} (standoff {spec.standoff * 1e3:.2f} mm) intersects the "
+                f"dome diaphragm (dome_depth {config.driver.dome_depth * 1e3:.2f} mm) — "
+                "increase standoff beyond dome_depth + thickness/2 + dx"
+            )
         if spec.shape == "rect":
             occ, porosity = parametric.rect_plate(
                 grid,
@@ -426,6 +438,40 @@ def build_scene(
 
     # Reference probe: closest to the ear-canal entrance.
     ref = int(np.argmin(np.linalg.norm(probes - np.asarray(canal_position), axis=1)))
+
+    # Sources are built after the parts so the dome source can see the final
+    # `solid` (its faces are the dome's open boundary faces in the full scene).
+    sources: list[Source]
+    if config.driver.shape == "dome":
+        assert dome_occ is not None
+        sources = [
+            RigidBodySource(
+                occupancy=dome_occ,
+                solid=solid,
+                direction=normal,
+                waveform=waveform,
+            )
+        ]
+    elif config.driver.shape == "rect":
+        sources = [
+            RectangularPistonSource(
+                center=driver_center,
+                normal=normal,
+                width=config.driver.width,
+                height=config.driver.height,
+                waveform=waveform,
+            )
+        ]
+    else:
+        sources = [
+            PistonSource(
+                center=driver_center,
+                normal=normal,
+                radius=r_driver,
+                inner_radius=config.driver.inner_diameter / 2.0,
+                waveform=waveform,
+            )
+        ]
 
     snapshot = (
         SnapshotConfig(every=config.snapshot_every, axis=0) if config.snapshot_every > 0 else None

@@ -1,0 +1,35 @@
+# Design H — 40mm driver with a Final-DX10000CL-style dome diaphragm:
+# near-full-surface spherical-cap dome (dia. 34mm, 5mm apex) with a narrow
+# roll surround, voxelized and driven as a rigid body. Grille standoff raised
+# to 6.5mm to clear the dome apex (real-headphone placement) — the sealed
+# driver-to-grille cavity is therefore deeper than in the flat baselines, so
+# strict cavity A/B holds only against compare_without_filters, not against
+# hutubs_40mm_parallel_close. The 3mm roll edge is ~6x3 cells at dx=0.5mm
+# (qualitative shape only).
+name: hutubs_40mm_dome
+device: null
+compare_without_filters: true
+scene:
+  dx: 0.5e-3
+  distance: 10.0e-3
+  record_ms: 2.5
+  snapshot_every: 40
+  driver:
+    diameter: 40.0e-3
+    tilt_deg: -15.0
+    shape: dome
+    dome_fraction: 0.85
+    dome_depth: 5.0e-3
+    edge_height: 1.0e-3
+    surround: roll
+  filters:
+    - kind: hex
+      radius: 20.0e-3
+      hole_radius: 1.0e-3
+      pitch: 2.6e-3
+      thickness: 0.5e-3
+      standoff: 6.5e-3
+  pinna:
+    kind: mesh
+    mesh_path: data/hutubs/pp1_3DheadMesh.ply
+    side: left
