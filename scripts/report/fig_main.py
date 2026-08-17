@@ -1,13 +1,13 @@
 """Main figures for the 4-model comparison report (radar, lateral,
 levels, pinna TFs, geometry views, final_summary.json). Run from repo root."""
 
-import dataclasses
-import glob
 import json
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
 plt.rcParams["font.family"] = "Noto Sans CJK HK"
 import numpy as np
 
@@ -144,6 +144,7 @@ fig.savefig("runs/final_pinna_tf.png", dpi=115, bbox_inches="tight")
 from headphone_sims.experiments.config import load_config
 from headphone_sims.geometry.scene import build_scene
 from headphone_sims.viz.scene_view import save_scene_views
+
 CFGS = {"Z1R": "configs/hutubs_70mm_z1r_v2.yaml",
         "LCD": "configs/hutubs_90mm_planar_v2.yaml",
         "DX": "configs/hutubs_40mm_dome_v2.yaml",
