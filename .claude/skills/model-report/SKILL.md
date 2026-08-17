@@ -37,7 +37,10 @@ uv run python scripts/robustness/fig_preservation.py       # 個人署名保存(
 ```
 
 - pp1は再実行しない(batch3_*/bare_* を再利用)。他被験者は ms_pp{N}_*、再装着は rs_*。
-  透明基準ラン ms_pp{N}_ideal_* (10mmピストン・構造なし・距離20mm共通)はpp1含め run_subjects が生成
+  透明ドライバ基準ラン ms_pp{N}_tr_{model}_* (同一開口のモノポール面、実体・構造なし、
+  `SceneConfig.transparent_driver`)はpp1含め run_subjects が生成 —
+  保存分析(fig_preservation / fig_notch_preservation)の基準。
+  モデル横断の共通ソース基準は方法論として却下済み(口径・距離が混入する)、使わないこと
 - メッシュは `headphone_sims.geometry.datasets.fetch_hutubs_mesh`(全96番あるわけではない、404多数)
 - 再装着の垂直ズレは `PinnaSpec.offset_y`(ピンナ+外耳道+プローブがy移動、ドライバ固定)
 - 集計JSON: subject_comb_summary / subject_variance_summary / reseat_summary(レポート表の自動反映元)

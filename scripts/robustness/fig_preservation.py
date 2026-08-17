@@ -1,32 +1,28 @@
-"""Individual-pinna preservation vs a transparent reference (issue #3 follow-up).
+"""Individual-pinna preservation vs the transparent-driver reference
+(issue #3 follow-up).
 
-The canonical individual response is TF_ideal: the subject's canal-probe
-pinna TF under a COMMON transparent source (10 mm mini piston, no baffle, no
-structure, fixed 20 mm distance — ms_pp{N}_ideal_*). Deviations of a real
-product from it are decomposed so the small-driver advantage is isolated
-instead of hidden (a small real driver resembles the mini-piston reference by
-aperture alone):
+Reference TF_tr: the model's OWN aperture emitting the same waveform from the
+same position as an additive monopole sheet — no driver body, no baffle, no
+structure (ms_pp{N}_tr_{model}_*). Its pinna TF contains the pinna-only
+response that this model's illumination geometry would produce; aperture,
+distance, and waveform match the structured run by construction, so nothing
+is confounded. Two more rungs decompose where the response is lost:
 
-- P_drv = corr(TF_bare_model,  TF_ideal)  driver geometry/placement only
-- P_str = corr(TF_struct,      TF_bare)   front structure only (aperture-fair:
-  bare shares the model's own driver, so this term carries no size confound)
-- P_tot = corr(TF_struct,      TF_ideal)  the full product vs the canonical
-  response — small drivers legitimately score high here via P_drv
+- P_tot  = corr( TF_struct, TF_tr )   the full product vs pinna-only
+- P_body = corr( TF_bare,   TF_tr )   driver-body re-scattering alone
+  (bare = same driver as a solid/hard source, no structure)
+- P_str  = corr( TF_struct, TF_bare ) front structure alone
 
-Signature versions subtract the panel mean first (s_i = TF_i - mean_j TF_j),
-keeping only what makes THIS ear different — the common concha resonance
-inflates the raw correlations but carries no individual information:
+Signature versions subtract the per-model panel mean (s_i = TF_i - mean_j
+TF_j), keeping only what makes THIS ear different — the common concha
+resonance inflates raw correlations but carries no individual information:
 
-- P_sig_tot = corr(s_struct_i, s_ideal_i)  headline: does the product deliver
-  the individual peaks/notches the transparent reference would?
-- P_sig_str = corr(s_struct_i, s_bare_i)   structure-only signature term
+- P_sig_tot = corr( s_struct_i, s_tr_i )    headline: does the product
+  deliver the individual response the transparent driver would?
+- P_sig_str = corr( s_struct_i, s_bare_i )  structure-only signature term
 
-All TFs 1/24-oct-smoothed dB on a common log-f grid. Bands: 4-12.5 kHz
-(pinna-notch band, primary) and the 5-10 kHz core.
-
-Note on interpretation: LOW inter-subject variance of responses is not the
-goal — responses SHOULD differ per ear; the goal is high P_sig_tot (correct
-individualization) with consistent quality.
+All TFs canal-probe, 1/24-oct-smoothed dB on a common log-f grid. Bands:
+4-12.5 kHz (pinna-notch band, primary) and the 5-10 kHz core.
 
 Outputs: runs/preservation.png, runs/preservation_summary.json
 Run from the repo root after run_subjects.py. Optional argv: model keys.
@@ -42,7 +38,7 @@ import matplotlib.pyplot as plt
 
 plt.rcParams["font.family"] = "Noto Sans CJK HK"
 import numpy as np
-from common import bare_paths, canal_tf, ideal_paths, smooth, structured_paths
+from common import bare_paths, canal_tf, smooth, structured_paths, transparent_paths
 
 MODELS = {
     "z1r": ("MDR-Z1R型", "#C05B21"),
@@ -52,7 +48,6 @@ MODELS = {
 }
 BANDS = {"pinna": (4000.0, 12500.0), "core": (5000.0, 10000.0)}
 N_GRID = 192
-KEYS = ["P_drv", "P_str", "P_tot", "P_sig_str", "P_sig_tot"]
 
 
 def tf_db_on(paths: tuple[str, str], grid: np.ndarray) -> np.ndarray:
@@ -76,31 +71,31 @@ def main() -> None:
         subjects = json.load(fh)["panel_with_pp1"]
 
     summary: dict = {"subjects": subjects, "models": {}}
-    sig_examples: dict = {}  # model -> (grid, s_ideal, s_struct)
+    sig_examples: dict = {}  # model -> (grid, s_tr, s_struct)
     for band_name, (f_lo, f_hi) in BANDS.items():
         grid = np.geomspace(f_lo, f_hi, N_GRID)
-        ti = np.stack([tf_db_on(ideal_paths(s), grid) for s in subjects])
-        s_ideal = ti - ti.mean(axis=0)
         for model in models:
+            tt = np.stack([tf_db_on(transparent_paths(s, model), grid) for s in subjects])
             tb = np.stack([tf_db_on(bare_paths(s, model), grid) for s in subjects])
             ts = np.stack([tf_db_on(structured_paths(s, model), grid) for s in subjects])
+            s_tr = tt - tt.mean(axis=0)
             s_bare = tb - tb.mean(axis=0)
             s_struct = ts - ts.mean(axis=0)
             entry = {
-                "P_drv": stats(corr_rows(tb, ti)),
+                "P_tot": stats(corr_rows(ts, tt)),
+                "P_body": stats(corr_rows(tb, tt)),
                 "P_str": stats(corr_rows(ts, tb)),
-                "P_tot": stats(corr_rows(ts, ti)),
+                "P_sig_tot": stats(corr_rows(s_struct, s_tr)),
                 "P_sig_str": stats(corr_rows(s_struct, s_bare)),
-                "P_sig_tot": stats(corr_rows(s_struct, s_ideal)),
             }
             summary["models"].setdefault(model, {})[band_name] = entry
             if band_name == "pinna":
-                sig_examples[model] = (grid, s_ideal, s_struct)
+                sig_examples[model] = (grid, s_tr, s_struct)
 
     for model in models:
         p = summary["models"][model]["pinna"]
         print(
-            f"{model:5s} P_drv {p['P_drv']['mean']:.3f}  P_str {p['P_str']['mean']:.3f}  "
+            f"{model:5s} P_body {p['P_body']['mean']:.3f}  P_str {p['P_str']['mean']:.3f}  "
             f"P_tot {p['P_tot']['mean']:.3f}  sig_str {p['P_sig_str']['mean']:.3f}  "
             f"sig_tot {p['P_sig_tot']['mean']:.3f}±{p['P_sig_tot']['std']:.3f}",
             flush=True,
@@ -110,9 +105,9 @@ def main() -> None:
     lo_m, hi_m = ranked[0], ranked[-1]
 
     fig, axes = plt.subplots(2, 2, figsize=(13.5, 8.8))
-    # (a) decomposition: mean P_drv / P_str / P_tot per model
+    # (a) ladder: mean P_body / P_str / P_tot per model
     ax = axes[0][0]
-    comp = [("P_drv", "ドライバ由来", 0.55), ("P_str", "構造由来", 0.8), ("P_tot", "製品全体", 1.0)]
+    comp = [("P_body", "ドライバ実体のみ", 0.5), ("P_str", "構造のみ", 0.75), ("P_tot", "製品全体", 1.0)]
     width = 0.26
     for j, (key, klabel, shade) in enumerate(comp):
         for i, (model, (label, color)) in enumerate(models.items()):
@@ -124,7 +119,7 @@ def main() -> None:
     ax.set_xticklabels([v[0] for v in models.values()], fontsize=9)
     ax.grid(alpha=0.3, axis="y")
     ax.set_ylabel("相関係数(平均±σ)")
-    ax.set_title("保存の分解: ドライバ由来 / 構造由来 / 製品全体(生TF)", fontsize=11)
+    ax.set_title("保存の分解(基準=透明ドライバ、開口・距離一致)", fontsize=11)
     ax.legend(fontsize=8)
     # (b) headline: signature preservation vs the transparent reference
     ax = axes[0][1]
@@ -137,13 +132,13 @@ def main() -> None:
     ax.set_xticklabels([v[0] for v in models.values()], fontsize=9)
     ax.grid(alpha=0.3, axis="y")
     ax.set_ylabel("P_sig_tot")
-    ax.set_title("個人署名の保存 vs 透明基準(点=被験者)", fontsize=11)
-    # (c)(d) example signatures: ideal (dashed) vs structured (solid)
+    ax.set_title("個人署名の保存 vs 透明ドライバ(点=被験者)", fontsize=11)
+    # (c)(d) example signatures: transparent (dashed) vs structured (solid)
     for ax, model, tag in [(axes[1][0], hi_m, "最良"), (axes[1][1], lo_m, "最悪")]:
-        grid, s_ideal, s_struct = sig_examples[model]
+        grid, s_tr, s_struct = sig_examples[model]
         shades = plt.cm.cividis(np.linspace(0.05, 0.9, len(subjects)))
         for i, s in enumerate(subjects):
-            ax.plot(grid / 1e3, s_ideal[i], color=shades[i], lw=1.0, ls="--", alpha=0.7)
+            ax.plot(grid / 1e3, s_tr[i], color=shades[i], lw=1.0, ls="--", alpha=0.7)
             ax.plot(grid / 1e3, s_struct[i], color=shades[i], lw=1.4,
                     label=f"pp{s}" if model == hi_m else None)
         ax.set_xscale("log")
@@ -158,7 +153,10 @@ def main() -> None:
             fontsize=11,
         )
     axes[1][0].legend(fontsize=7, ncol=2)
-    fig.suptitle("個人ピンナ応答の保存 — 透明ドライバ基準との比較(外耳道、8被験者)", fontsize=13)
+    fig.suptitle(
+        "個人ピンナ応答の保存 — 透明ドライバ(同一開口・実体なし)基準(外耳道、8被験者)",
+        fontsize=13,
+    )
     fig.savefig("runs/preservation.png", dpi=115, bbox_inches="tight")
     with open("runs/preservation_summary.json", "w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=1)

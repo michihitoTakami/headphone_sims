@@ -49,11 +49,12 @@ def bare_paths(subject: int, model: str) -> tuple[str, str]:
     )
 
 
-def ideal_paths(subject: int) -> tuple[str, str]:
-    """Transparent-reference pair (model-independent mini piston)."""
+def transparent_paths(subject: int, model: str) -> tuple[str, str]:
+    """Transparent-driver reference pair: the model's aperture as an additive
+    monopole sheet — no driver body, no baffle, no structure."""
     return (
-        f"runs/ms_pp{subject}_ideal_incident.npz",
-        f"runs/ms_pp{subject}_ideal_pinna.npz",
+        f"runs/ms_pp{subject}_tr_{model}_incident.npz",
+        f"runs/ms_pp{subject}_tr_{model}_pinna.npz",
     )
 
 
