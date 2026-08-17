@@ -10,10 +10,11 @@ directly, per subject x model, canal probe, 4-12.5 kHz, 1/24-oct-smoothed:
 - PRESERVED if the product TF has a notch within TOL_OCT (1/12 octave);
   preserved notches also report frequency shift (cents) and depth change
   (dB), with a "preserved but attenuated" flag when >6 dB shallower
-- LOST notches are classified: if a coupling-comb notch of C(f) (structured
-  TF / bare TF) sits within TOL_OCT of the reference notch, the loss is a
-  COMB COLLISION (the hardware notch squashed/absorbed the pinna notch);
-  otherwise "other" (flattening, level fill-in)
+- LOST notches are classified by what the coupling comb C(f) (structured TF
+  / bare TF) does at the reference frequency: a comb PEAK within TOL_OCT
+  fills the pinna notch in ("comb-peak fill-in"); a comb NOTCH there would
+  be a collision; otherwise "other". Preserved notches also record whether
+  a comb notch overlaps (alignment deepens the notch rather than killing it)
 - spurious rate: product notches with no reference counterpart — cues the
   hardware injected (mostly the comb)
 
@@ -99,7 +100,8 @@ def main() -> None:
                      "attenuated_db": ATTEN_DB, "models": {}}
     pairs_all: dict = {}
     for model in MODELS:
-        n_ref = kept = kept_atten = lost_comb = lost_other = 0
+        n_ref = kept = kept_atten = kept_comb_notch = 0
+        lost_peak = lost_notch = lost_other = 0
         shifts, ddepths, per_subj, pairs = [], [], [], []
         n_spur = n_prod = 0
         for s in subjects:
@@ -108,7 +110,12 @@ def main() -> None:
             fc, cdb = coupling_db(
                 structured_paths(s, model), bare_paths(s, model)
             )
-            hw = notch_freqs(fc, cdb, BAND)
+            hw_notch = notch_freqs(fc, cdb, BAND)
+            hw_peak = notch_freqs(fc, -cdb, BAND)  # C(f) maxima
+
+            def near(rf: float, freqs: np.ndarray) -> bool:
+                return any(abs(np.log2(f / rf)) <= TOL_OCT for f in freqs)
+
             n_ref += len(ref_n)
             m_tot = match(ref_n, struct_n)
             hit = sum(1 for _, c in m_tot if c is not None)
@@ -123,12 +130,14 @@ def main() -> None:
                     pairs.append((rf, cf))
                     if cp - rp <= -ATTEN_DB:
                         kept_atten += 1
+                    if near(rf, hw_notch):
+                        kept_comb_notch += 1
+                elif near(rf, hw_peak):
+                    lost_peak += 1
+                elif near(rf, hw_notch):
+                    lost_notch += 1
                 else:
-                    collided = any(abs(np.log2(f / rf)) <= TOL_OCT for f in hw)
-                    if collided:
-                        lost_comb += 1
-                    else:
-                        lost_other += 1
+                    lost_other += 1
             m_rev = match(struct_n, ref_n)
             n_spur += sum(1 for _, c in m_rev if c is None)
             n_prod += len(struct_n)
@@ -137,7 +146,9 @@ def main() -> None:
             "n_reference_notches": n_ref,
             "recall": kept / max(n_ref, 1),
             "preserved_attenuated": kept_atten,
-            "lost_comb_collision": lost_comb,
+            "preserved_with_comb_notch": kept_comb_notch,
+            "lost_comb_peak": lost_peak,
+            "lost_comb_notch": lost_notch,
             "lost_other": lost_other,
             "per_subject_recall": per_subj,
             "freq_shift_cents_median": float(np.median(np.abs(shifts))) if shifts else None,
@@ -148,7 +159,8 @@ def main() -> None:
         summary["models"][model] = entry
         print(
             f"{model:5s} ref {n_ref}  recall {entry['recall']:.2f} "
-            f"(減衰 {kept_atten})  消失: コーム衝突 {lost_comb} / 他 {lost_other}  "
+            f"(減衰 {kept_atten}, コームノッチ重なり {kept_comb_notch})  "
+            f"消失: コーム山埋没 {lost_peak} / コームノッチ {lost_notch} / 他 {lost_other}  "
             f"|Δf| {entry['freq_shift_cents_median'] or 0:.0f}c "
             f"Δ深さ {entry['depth_change_db_mean'] or 0:+.1f}dB  "
             f"偽ノッチ {entry['spurious_rate']:.2f} ({n_prod}本中)",
@@ -163,15 +175,18 @@ def main() -> None:
         n = max(e["n_reference_notches"], 1)
         ok = (e["recall"] * n - e["preserved_attenuated"]) / n
         att = e["preserved_attenuated"] / n
-        lc = e["lost_comb_collision"] / n
+        lp = e["lost_comb_peak"] / n
+        ln_ = e["lost_comb_notch"] / n
         lo = e["lost_other"] / n
         ax.bar(i, ok, 0.6, color=color,
                label="保存" if i == 0 else None)
         ax.bar(i, att, 0.6, bottom=ok, color=color, alpha=0.45,
                label="保存(6dB超減衰)" if i == 0 else None)
-        ax.bar(i, lc, 0.6, bottom=ok + att, color="#B3352B", alpha=0.85,
-               label="消失: コーム衝突" if i == 0 else None)
-        ax.bar(i, lo, 0.6, bottom=ok + att + lc, color="#9AA3AB",
+        ax.bar(i, lp, 0.6, bottom=ok + att, color="#B3352B", alpha=0.85,
+               label="消失: コーム山で埋没" if i == 0 else None)
+        ax.bar(i, ln_, 0.6, bottom=ok + att + lp, color="#E08A2E", alpha=0.85,
+               label="消失: コームノッチ重なり" if i == 0 else None)
+        ax.bar(i, lo, 0.6, bottom=ok + att + lp + ln_, color="#9AA3AB",
                label="消失: その他" if i == 0 else None)
         ps = e["per_subject_recall"]
         ax.scatter([i] * len(ps), ps, color="#222", s=14, zorder=3)
