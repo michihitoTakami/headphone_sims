@@ -28,6 +28,7 @@ from headphone_sims.fdtd.sources import (
 from headphone_sims.geometry import parametric
 from headphone_sims.geometry.mesh import load_mesh, voxelize
 from headphone_sims.geometry.parametric import (
+    AmtsHexCells,
     ChamferedSlots,
     FibonacciSpirals,
     HexHoles,
@@ -65,6 +66,17 @@ class DriverSpec:
     dome_depth: float = 5e-3  # apex height above the rim plane (total protrusion)
     edge_height: float = 1e-3  # dome/surround junction height above the rim plane
     surround: Literal["roll", "cone"] = "roll"
+    edge_roll_height: float | None = None  # rounded (donut) edge bump amplitude
+    # Width of the rim clamp zone for dome_drive="tapered". None = taper over
+    # the whole surround span (soft edge); a value (e.g. 5mm) confines the
+    # cos^2 roll-off to the last taper_width before the rim — the correct
+    # model for a stiff (pleated) edge that moves near-pistonically.
+    taper_width: float | None = None
+    # "tapered" (default, the physical model): the coil-driven dome moves at
+    # full amplitude and the rim-clamped surround's amplitude tapers smoothly
+    # (cos^2) to zero at the rim. "full" = rigid translation (unphysical rim
+    # step, LF bound); "dome" = frozen surround (HF decoupling bound).
+    dome_drive: Literal["tapered", "full", "dome"] = "tapered"
 
     def half_extents(self) -> tuple[float, float]:
         """Lateral half extents (x, y) of the radiating surface."""
@@ -77,7 +89,7 @@ class DriverSpec:
 class FilterSpec:
     """Perforated plate between driver and ear."""
 
-    kind: Literal["hex", "slots", "rings", "fib", "solid"]
+    kind: Literal["hex", "slots", "rings", "fib", "amts", "solid"]
     standoff: float = 3e-3  # distance from driver plane toward the ear
     thickness: float = 1e-3
     radius: float | None = None  # default: driver radius + 2 mm
@@ -88,6 +100,10 @@ class FilterSpec:
     width: float = 65e-3
     height: float = 90e-3
     pattern_angle_deg: float = 0.0
+    # Curved grille following a dome diaphragm's profile at constant `gap`
+    # (real Z1R protector). Requires driver.shape="dome"; `standoff` ignored.
+    follow_profile: bool = False
+    gap: float = 2e-3
     # Fazor-style chamfer for kind="slots": >0 flares the gap toward the ear
     # over the exit `chamfer_fraction` of the thickness (bar cross-section
     # becomes trapezoidal), shortening the acoustic neck.
@@ -102,10 +118,24 @@ class FilterSpec:
     # all sound must pass through the holes). False = free-floating disc,
     # which lets sound diffract around the rim through the standoff gap.
     sealed: bool = True
-    hole_radius: float = 0.5e-3  # hex
-    pitch: float = 2e-3  # hex, slots
+    hole_radius: float = 0.5e-3  # hex; amts: tube/cavity radius
+    pitch: float = 2e-3  # hex, slots, amts
     slot_width: float = 1e-3  # slots
     rings: tuple[tuple[float, float], ...] = ()  # ring slits (r_in, r_out)
+    # amts (AMTS-style metamaterial insert, DCA Stealth/Expanse): a thick
+    # plate (`thickness` = max height) whose ear-side top slopes down to
+    # `amts_min_thickness` along the height axis, with alternating open
+    # through-tubes and necked Helmholtz cells on a hex lattice. Intended for
+    # shape="rect"; the reported porosity is not meaningful for this kind.
+    amts_min_thickness: float = 3e-3
+    amts_neck_radius: float = 1.2e-3
+    amts_neck_length: float = 1e-3
+    amts_bottom_wall: float = 1e-3
+    # Explicit cell map (photo-measured real part): listed (m, n) lattice
+    # cells become closed-top quarter-wave plugs open to the driver side;
+    # all other cells are open through-tubes (parity/Helmholtz rule unused).
+    amts_plug_cells: tuple[tuple[int, int], ...] | None = None
+    amts_plug_wall: float = 1e-3
 
     def pattern(self) -> HolePattern | None:
         if self.kind == "hex":
@@ -121,6 +151,19 @@ class FilterSpec:
             return Slots(width=self.slot_width, pitch=self.pitch)
         if self.kind == "rings":
             return RingSlits(rings=self.rings)
+        if self.kind == "amts":
+            return AmtsHexCells(
+                tube_radius=self.hole_radius,
+                pitch=self.pitch,
+                slope_length=self.height,
+                min_thickness=self.amts_min_thickness,
+                max_thickness=self.thickness,
+                neck_radius=self.amts_neck_radius,
+                neck_length=self.amts_neck_length,
+                bottom_wall=self.amts_bottom_wall,
+                plug_cells=self.amts_plug_cells,
+                plug_wall=self.amts_plug_wall,
+            )
         if self.kind == "fib":
             return FibonacciSpirals(
                 rib_width=self.rib_width,
@@ -162,6 +205,11 @@ class SceneConfig:
     cup_depth: float = 0.0  # >0 adds a cylindrical cup behind the driver
     lateral_margin: float = 15e-3
     axial_margin: float = 20e-3
+    # Real headphones present a front face that is roughly FLUSH with the
+    # grille/magnet front (the driver assembly is not a sunken moat with a
+    # bare sealing wall). True raises the baffle around each sealed filter up
+    # to the filter's front plane ("housing" part).
+    housing_flange: bool = True
     sponge_thickness: int = 30
     n_probes: int = 400
     probe_offset: float = 1.5e-3
@@ -212,9 +260,16 @@ def build_scene(
     config: SceneConfig,
     device: str | None = None,
     probes_override: npt.NDArray[np.float64] | None = None,
+    incident_only: bool = False,
 ) -> BuiltScene:
     """Assemble a scene. ``probes_override`` reuses an existing probe layout
-    verbatim (for paired with/without-filter runs, which must share probes)."""
+    verbatim (for paired with/without-filter runs, which must share probes).
+
+    ``incident_only=True`` builds the identical scene (same probes, derived
+    from the pinna as usual) but excludes the pinna/head solid from the
+    simulation, so the probes record the incident wavefront only — the
+    source-quality isolation protocol. Use a tight metrics window
+    (e.g. pre 0.1 ms / post 0.15 ms) to look at the arrival instant."""
     grid, driver_center, z_pinna = _domain_grid(config)
     n_steps = int(np.ceil(config.record_ms * 1e-3 / grid.dt))
     drv_hx, drv_hy = config.driver.half_extents()
@@ -260,6 +315,7 @@ def build_scene(
             dome_depth=config.driver.dome_depth,
             edge_height=config.driver.edge_height,
             surround=config.driver.surround,
+            roll_height=config.driver.edge_roll_height,
         )
         dome_occ = parametric.dome_solid(
             grid, driver_center, normal, dome_profile, base_depth=config.dx
@@ -294,6 +350,44 @@ def build_scene(
         )
 
     for i, spec in enumerate(config.filters):
+        if spec.follow_profile:
+            if config.driver.shape != "dome":
+                raise ValueError("follow_profile grilles require driver.shape='dome'")
+            occ, porosity = parametric.profiled_plate(
+                grid,
+                driver_center,
+                normal,
+                dome_profile,
+                gap=spec.gap,
+                thickness=spec.thickness,
+                pattern=spec.pattern(),
+                pattern_angle_deg=spec.pattern_angle_deg,
+            )
+            if spec.sealed:
+                occ = occ | parametric.annular_collar(
+                    grid,
+                    driver_center,
+                    normal,
+                    radius=dome_profile.radius,
+                    length=spec.gap + spec.thickness + grid.dx,
+                    thickness=2 * config.dx,
+                )
+                if config.housing_flange:
+                    r_b = config.baffle_radius or (r_driver + 10e-3)
+                    add_part(
+                        f"housing_{i + 1}",
+                        parametric.annular_collar(
+                            grid,
+                            driver_center,
+                            normal,
+                            radius=dome_profile.radius,
+                            length=spec.gap + spec.thickness + 2 * grid.dx,
+                            thickness=max(r_b - dome_profile.radius, 2 * config.dx),
+                        ),
+                    )
+            add_part(f"filter_{i + 1}", occ)
+            porosities.append(porosity)
+            continue
         if config.driver.shape == "dome" and (
             spec.standoff - spec.thickness / 2.0 <= config.driver.dome_depth + config.dx
         ):
@@ -323,6 +417,19 @@ def build_scene(
                     length=spec.standoff + spec.thickness / 2.0,
                     thickness=2 * config.dx,
                 )
+                if config.housing_flange:
+                    add_part(
+                        f"housing_{i + 1}",
+                        parametric.rect_collar(
+                            grid,
+                            driver_center,
+                            normal,
+                            width=spec.width,
+                            height=spec.height,
+                            length=spec.standoff + spec.thickness / 2.0 + grid.dx,
+                            thickness=10e-3,
+                        ),
+                    )
         else:
             r_filter = spec.radius or (r_driver + 2e-3)
             occ, porosity = parametric.plate(
@@ -343,6 +450,19 @@ def build_scene(
                     length=spec.standoff + spec.thickness / 2.0,
                     thickness=2 * config.dx,
                 )
+                if config.housing_flange:
+                    r_b = config.baffle_radius or (r_driver + 10e-3)
+                    add_part(
+                        f"housing_{i + 1}",
+                        parametric.annular_collar(
+                            grid,
+                            driver_center,
+                            normal,
+                            radius=r_filter,
+                            length=spec.standoff + spec.thickness / 2.0 + grid.dx,
+                            thickness=max(r_b - r_filter, 2 * config.dx),
+                        ),
+                    )
         add_part(f"filter_{i + 1}", occ)
         porosities.append(porosity)
 
@@ -441,15 +561,51 @@ def build_scene(
 
     # Sources are built after the parts so the dome source can see the final
     # `solid` (its faces are the dome's open boundary faces in the full scene).
+    sim_solid = solid
+    if incident_only:
+        sim_solid = torch.zeros(grid.shape, dtype=torch.bool)
+        for name, occ_part in parts:
+            if name != "pinna":
+                sim_solid |= occ_part
     sources: list[Source]
     if config.driver.shape == "dome":
         assert dome_occ is not None
+        drive_occ: torch.Tensor | None = None
+        amp_field: torch.Tensor | None = None
+        idx = dome_occ.nonzero(as_tuple=False).to(torch.float64)
+        cell_centers = (idx + 0.5) * grid.dx
+        rel = cell_centers - torch.tensor(driver_center, dtype=torch.float64)
+        n_t = torch.tensor(normal, dtype=torch.float64)
+        axial_c = rel @ n_t
+        lateral = torch.linalg.vector_norm(rel - axial_c[:, None] * n_t, dim=1)
+        r_dome = config.driver.dome_fraction * r_driver + grid.dx
+        idx_i = idx.to(torch.int64)
+        if config.driver.dome_drive == "dome":
+            keep = idx_i[lateral <= r_dome]
+            drive_occ = torch.zeros_like(dome_occ)
+            drive_occ[keep[:, 0], keep[:, 1], keep[:, 2]] = True
+        elif config.driver.dome_drive == "tapered":
+            # Coil-driven dome at full amplitude; the rim-clamped surround
+            # tapers smoothly (cos^2) to zero at the rim — over the whole
+            # surround (soft edge) or only the last taper_width (stiff edge).
+            if config.driver.taper_width is not None:
+                span = max(config.driver.taper_width, grid.dx)
+                taper_start = r_driver - span
+            else:
+                span = max(r_driver - r_dome, grid.dx)
+                taper_start = r_dome
+            t = ((lateral - taper_start) / span).clamp(0.0, 1.0)
+            amp = torch.cos(torch.pi / 2.0 * t) ** 2
+            amp_field = torch.zeros(grid.shape, dtype=torch.float32)
+            amp_field[idx_i[:, 0], idx_i[:, 1], idx_i[:, 2]] = amp.to(torch.float32)
         sources = [
             RigidBodySource(
                 occupancy=dome_occ,
-                solid=solid,
+                solid=sim_solid,
                 direction=normal,
                 waveform=waveform,
+                drive_occupancy=drive_occ,
+                amplitude_field=amp_field,
             )
         ]
     elif config.driver.shape == "rect":
@@ -481,7 +637,7 @@ def build_scene(
         sources=sources,
         receivers=ReceiverArray(probes),
         n_steps=n_steps,
-        solid=solid,
+        solid=sim_solid,
         sponge=SpongeConfig(thickness=config.sponge_thickness),
         device=device,
         snapshot=snapshot,

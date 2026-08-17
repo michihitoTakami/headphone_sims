@@ -127,6 +127,124 @@ class ChamferedSlots(HolePattern):
 
 
 @dataclass(frozen=True)
+class AmtsHexCells(HolePattern):
+    """AMTS-style acoustic-metamaterial insert (Dan Clark Audio Stealth/Expanse).
+
+    A thick plate whose top (ear-side) surface slopes linearly along the
+    pattern a-axis from ``min_thickness`` to ``max_thickness``, carrying a
+    hexagonal lattice of circular cells of two alternating kinds:
+
+    - **through tubes** (lattice parity even): open bottom-to-top — waveguides
+      whose length varies with the slope (open-open resonances c/2L).
+    - **Helmholtz cells** (parity odd): closed by ``bottom_wall`` on the driver
+      side, a cavity of ``tube_radius`` up to ``neck_length`` below the local
+      top, then a narrowed neck of ``neck_radius`` — side-branch resonators
+      whose tuning sweeps along the slope.
+
+    Everything above the local sloped top is open air (the insert sits inside
+    the pad cavity). Use with a plate ``thickness == max_thickness``. NOTE:
+    the plate's reported porosity counts this carved-away air as "open", so it
+    is not meaningful for this pattern.
+
+    ``plug_cells`` overrides the parity rule with an explicit cell map
+    (photo-measured real part): listed lattice cells (m, n) — m the row index
+    along the b-axis, n the column index along the sloped a-axis — become
+    **plugged** cells: the tube stays open from the driver-side bottom but is
+    capped by ``plug_wall`` of solid at the local top (a closed-top quarter-
+    wave side branch facing the driver, f0 = c/4L). All unlisted cells are
+    open through-tubes; the neck/bottom-wall Helmholtz geometry is not used.
+    """
+
+    tube_radius: float
+    pitch: float
+    slope_length: float  # extent of the a-axis over which the top slopes
+    min_thickness: float
+    max_thickness: float
+    neck_radius: float = 1.2e-3
+    neck_length: float = 1.0e-3
+    bottom_wall: float = 1.0e-3
+    plug_cells: tuple[tuple[int, int], ...] | None = None
+    plug_wall: float = 1.0e-3
+
+    def _cells(self, a: torch.Tensor, b: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """(squared distance to nearest cell center, is-closed-cell).
+
+        The second value marks Helmholtz cells (parity rule) or plugged cells
+        (explicit ``plug_cells`` map) depending on the configured mode.
+        """
+        row_h = self.pitch * math.sqrt(3.0) / 2.0
+        lut = None
+        lut_m0 = lut_n0 = 0
+        if self.plug_cells is not None:
+            ms = [c[0] for c in self.plug_cells] or [0]
+            ns = [c[1] for c in self.plug_cells] or [0]
+            lut_m0, lut_n0 = min(ms), min(ns)
+            lut = torch.zeros(
+                (max(ms) - lut_m0 + 1, max(ns) - lut_n0 + 1),
+                dtype=torch.bool,
+                device=a.device,
+            )
+            for cm, cn in self.plug_cells:
+                lut[cm - lut_m0, cn - lut_n0] = True
+        m0 = torch.round(b / row_h)
+        best = torch.full_like(a, float("inf"))
+        closed = torch.zeros_like(a, dtype=torch.bool)
+        for dm in (-1.0, 0.0, 1.0):
+            m = m0 + dm
+            b_row = m * row_h
+            m_int = m.to(torch.int64)
+            offset = torch.where(m_int % 2 == 0, 0.0, self.pitch / 2.0)
+            n = torch.round((a - offset) / self.pitch)
+            a_near = n * self.pitch + offset
+            d2 = (a - a_near) ** 2 + (b - b_row) ** 2
+            n_int = n.to(torch.int64)
+            if lut is None:
+                is_closed = (m_int + n_int).remainder(2) == 1
+            else:
+                mi = (m_int - lut_m0).clamp(0, lut.shape[0] - 1)
+                ni = (n_int - lut_n0).clamp(0, lut.shape[1] - 1)
+                inside = (
+                    (m_int >= lut_m0)
+                    & (m_int - lut_m0 < lut.shape[0])
+                    & (n_int >= lut_n0)
+                    & (n_int - lut_n0 < lut.shape[1])
+                )
+                is_closed = inside & lut[mi, ni]
+            closer = d2 < best
+            best = torch.where(closer, d2, best)
+            closed = torch.where(closer, is_closed, closed)
+        return best, closed
+
+    def open_mask(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        # 2D fallback: every cell shows its tube/cavity cross-section.
+        d2, _ = self._cells(a, b)
+        return d2 <= self.tube_radius**2
+
+    def open_mask_3d(
+        self, a: torch.Tensor, b: torch.Tensor, axial_frac: torch.Tensor
+    ) -> torch.Tensor:
+        h = (axial_frac + 0.5) * self.max_thickness  # height above the driver-side face
+        t = (a / self.slope_length + 0.5).clamp(0.0, 1.0)  # 0 = thin (-a), 1 = thick (+a)
+        z_top = self.min_thickness + (self.max_thickness - self.min_thickness) * t
+        above = h > z_top
+        d2, closed = self._cells(a, b)
+        in_tube = d2 <= self.tube_radius**2
+        through_open = ~closed & in_tube
+        if self.plug_cells is not None:
+            # Plugged cell: open bottom (driver side), capped by plug_wall at
+            # the local top — a closed-top quarter-wave branch.
+            closed_open = closed & in_tube & (h < z_top - self.plug_wall)
+        else:
+            in_neck = d2 <= self.neck_radius**2
+            closed_open = (
+                closed
+                & (h > self.bottom_wall)
+                & torch.where(h > z_top - self.neck_length, in_neck, in_tube)
+            )
+        return above | through_open | closed_open
+
+
+@dataclass(frozen=True)
 class RingSlits(HolePattern):
     """Concentric open annular slits given as (r_inner, r_outer) pairs."""
 
@@ -281,6 +399,10 @@ class DomeProfile:
     dome_depth: float = 5e-3
     edge_height: float = 1e-3
     surround: str = "roll"
+    # Raised-sine bump amplitude of the surround (the rounded, donut-like
+    # edge of e.g. the MDR-Z1R diaphragm). None keeps the legacy defaults:
+    # span/2 for "roll", 0 for "cone".
+    roll_height: float | None = None
 
     def __post_init__(self) -> None:
         if not 0.0 < self.dome_fraction < 1.0:
@@ -304,10 +426,58 @@ class DomeProfile:
         span = self.radius - r_d
         t = ((r - r_d) / span).clamp(0.0, 1.0)
         chord = self.edge_height * (1.0 - t)
-        bulge = span / 2.0 if self.surround == "roll" else 0.0
+        if self.roll_height is not None:
+            bulge = self.roll_height
+        else:
+            bulge = span / 2.0 if self.surround == "roll" else 0.0
         edge = chord + bulge * torch.sin(math.pi * t)
         h = torch.where(r <= r_d, cap, edge)
         return torch.where(r <= self.radius, h.clamp(min=0.0), torch.zeros_like(h))
+
+
+def profiled_plate(
+    grid: Grid,
+    center: Vec3,
+    normal: Vec3,
+    profile: DomeProfile,
+    gap: float,
+    thickness: float,
+    pattern: HolePattern | None = None,
+    pattern_angle_deg: float = 0.0,
+) -> tuple[torch.Tensor, float]:
+    """Curved grille following the diaphragm profile at a constant ``gap``
+    (the real MDR-Z1R protector is domed, keeping a shallow uniform cavity).
+
+    Solid shell where local axial is in (h(r)+gap, h(r)+gap+thickness], with
+    the hole pattern applied in-plane. ``center`` is the diaphragm rim-plane
+    center; the shell spans the diaphragm radius.
+    """
+    n, u, w = _local_frame(normal)
+    half = profile.radius + profile.dome_depth + gap + thickness + 2 * grid.dx
+    (sx, sy, sz), gx, gy, gz = _subbox(grid, center, half)
+    dxv = gx - center[0]
+    dyv = gy - center[1]
+    dzv = gz - center[2]
+    axial = dxv * n[0] + dyv * n[1] + dzv * n[2]
+    a = dxv * u[0] + dyv * u[1] + dzv * u[2]
+    b = dxv * w[0] + dyv * w[1] + dzv * w[2]
+    r = torch.sqrt(a**2 + b**2)
+    h = profile.height(r)
+    bias = 1e-3 * grid.dx
+    in_shell = (
+        (r <= profile.radius) & (axial > h + gap + bias) & (axial <= h + gap + thickness + bias)
+    )
+    solid_local = in_shell.clone()
+    if pattern is not None:
+        ang = math.radians(pattern_angle_deg)
+        pa = a * math.cos(ang) + b * math.sin(ang)
+        pb = -a * math.sin(ang) + b * math.cos(ang)
+        solid_local &= ~pattern.open_mask(pa, pb)
+    n_shell = int(in_shell.sum())
+    porosity = 1.0 - int(solid_local.sum()) / n_shell if n_shell else 0.0
+    occ = torch.zeros(grid.shape, dtype=torch.bool)
+    occ[sx, sy, sz] = solid_local
+    return occ, porosity
 
 
 def dome_solid(

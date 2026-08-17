@@ -1,0 +1,38 @@
+# Design J — 70mm driver with an MDR-Z1R-style diaphragm shape: central
+# magnesium dome (dia. 31.5mm ~ the real 30mm dome, apex 7mm) plus a wide
+# gently sloped LCP edge (~12 deg, ribs ignored / axisymmetric), voxelized and
+# driven as a rigid body, behind the Fibonacci spiral grille of design E.
+# Curved grille follows the profile (2mm gap) to clear the dome apex — the sealed cavity
+# is deeper than in hutubs_70mm_z1r_fib, so strict cavity A/B holds only
+# against compare_without_filters.
+name: hutubs_70mm_z1r_curved
+device: null
+compare_without_filters: true
+scene:
+  dx: 0.5e-3
+  distance: 15.0e-3
+  record_ms: 2.5
+  snapshot_every: 40
+  driver:
+    diameter: 70.0e-3
+    tilt_deg: 0.0
+    shape: dome
+    dome_fraction: 0.45
+    dome_depth: 7.0e-3
+    edge_height: 4.0e-3
+    surround: cone
+    dome_drive: dome
+  filters:
+    - kind: fib
+      radius: 35.0e-3
+      rib_width: 1.2e-3
+      spirals_cw: 8
+      spirals_ccw: 13
+      winding: 1.2
+      thickness: 0.5e-3
+      follow_profile: true # curved protector: constant 2mm gap over the diaphragm
+      gap: 2.0e-3
+  pinna:
+    kind: mesh
+    mesh_path: data/hutubs/pp1_3DheadMesh.ply
+    side: left

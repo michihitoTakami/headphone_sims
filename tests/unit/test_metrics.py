@@ -1,6 +1,7 @@
 """Known-answer tests for pinna metrics on synthetic fields."""
 
 import numpy as np
+import pytest
 
 from headphone_sims.analysis.metrics import compare_runs, compute_metrics
 from headphone_sims.fdtd.simulation import SimulationResult
@@ -45,10 +46,14 @@ def _plane_wave_result(
 def test_plane_wave_is_ideal() -> None:
     result, center = _plane_wave_result()
     m = compute_metrics(result, center, reference_index=0)
-    assert m.similarity.min() > 0.99
+    assert m.similarity.min() > 0.99  # amplitude-aware: shape AND level match
+    assert m.shape_similarity.min() > 0.99
+    assert np.abs(m.level_re_ref_db).max() < 0.5
     assert m.incidence_deviation_deg.max() < 3.0
     assert m.incidence_spread_deg < 2.0
-    assert abs(m.arrival_error_ms).max() < 0.05
+    # Onset leads the envelope peak by a pulse-shape constant (same for all
+    # probes); the meaningful quantity is the spread.
+    assert np.ptp(m.arrival_error_ms) < 0.02
     assert m.arrival_spread_ms < 0.02
     assert m.diffuseness.max() < 0.1
     # Plane wave has no 1/r decay; deviation vs the 1/r-scaled reference stays
@@ -61,7 +66,9 @@ def test_incoherent_field_is_diffuse() -> None:
     rng = np.random.default_rng(1)
     # Replace velocity with sign-flipping noise: p and v uncorrelated.
     result.v = rng.standard_normal(result.v.shape) * float(np.abs(result.p).max()) / RHO_C
-    m = compute_metrics(result, center, reference_index=0)
+    # band=None: this test exercises the diffuseness mechanics on white noise
+    # (band-limiting smooths the noise and partially decorrelates the test).
+    m = compute_metrics(result, center, reference_index=0, band=None)
     assert m.diffuseness.mean() > 0.7
 
 
@@ -86,3 +93,33 @@ def test_compare_runs_detects_added_reflection() -> None:
     cmp = compare_runs(modified, result)
     # 0.3 amplitude echo -> residual energy ~ -10.5 dB.
     assert -13.0 < cmp.residual_energy_db.mean() < -8.0
+
+
+def test_amplitude_scaling_penalized() -> None:
+    """A half-amplitude probe has perfect shape but similarity ~0.80."""
+    result, center = _plane_wave_result()
+    result.p[:, 5] *= 0.5
+    result.v[:, :, 5] *= 0.5
+    m = compute_metrics(result, center, reference_index=0)
+    assert m.shape_similarity[5] > 0.99  # shape unchanged
+    assert m.similarity[5] == pytest.approx(2 * 0.5 / (1 + 0.25), abs=0.02)  # 0.80
+    assert m.level_re_ref_db[5] == pytest.approx(-6.0, abs=0.3)
+    assert m.summary()["level_min_db"] < -5.5
+
+
+def test_band_limit_ignores_ultrasonic_disturbance() -> None:
+    """A 16 kHz-only corruption must not affect 1-12.5 kHz band metrics."""
+    result, center = _plane_wave_result()
+    clean = compute_metrics(result, center, reference_index=0)
+    t = np.arange(result.p.shape[0]) * result.dt
+    result.p[:, 7] += (
+        0.8
+        * float(np.abs(result.p).max())
+        * np.sin(2 * np.pi * 16000 * t)
+        * np.exp(-0.5 * ((t - 1.05e-3) / 80e-6) ** 2)
+    )
+    corrupted = compute_metrics(result, center, reference_index=0)
+    assert corrupted.similarity[7] == pytest.approx(clean.similarity[7], abs=0.03)
+    # Full-band analysis DOES see it.
+    fullband = compute_metrics(result, center, reference_index=0, band=None, band_max=20000.0)
+    assert fullband.similarity[7] < clean.similarity[7] - 0.1

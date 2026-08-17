@@ -292,3 +292,190 @@ def test_dome_scene_builds_and_registers_driver_part() -> None:
     assert "baffle" in names
     driver_occ = dict(built.parts)["driver"]
     assert int(driver_occ.sum()) > 0
+
+
+def test_dome_only_drive_restricts_faces() -> None:
+    """dome_drive="dome" drives fewer faces, all within the dome rim radius."""
+    import dataclasses
+
+    from headphone_sims.experiments.config import load_config
+
+    base = load_config("configs/hutubs_70mm_z1r_dome.yaml").scene
+    small = dataclasses.replace(
+        base,
+        dx=1.0e-3,
+        record_ms=0.1,
+        sponge_thickness=8,
+        lateral_margin=6e-3,
+        axial_margin=8e-3,
+        n_probes=20,
+        pinna=dataclasses.replace(base.pinna, kind="none", mesh_path=None),
+    )
+    full = build_scene(small, device="cpu")
+    dome_only = build_scene(
+        dataclasses.replace(small, driver=dataclasses.replace(small.driver, dome_drive="dome")),
+        device="cpu",
+    )
+    n_full = sum(i.numel() for i in full.simulation.baked_sources[0].v_idx or ())
+    n_dome = sum(i.numel() for i in dome_only.simulation.baked_sources[0].v_idx or ())
+    assert 0 < n_dome < n_full
+    # Roughly the dome's projected-area share of the total driven z-faces.
+    assert n_dome < 0.5 * n_full
+
+
+def test_tapered_drive_amplitude_profile() -> None:
+    """Tapered drive: full amplitude on the dome, monotonic decay on the
+    surround, ~0 at the rim, and volume velocity between dome-only and full."""
+    import dataclasses
+
+    import numpy as np
+
+    from headphone_sims.experiments.config import load_config
+
+    base = load_config("configs/hutubs_70mm_z1r_dome.yaml").scene
+    small = dataclasses.replace(
+        base,
+        dx=1.0e-3,
+        record_ms=0.1,
+        sponge_thickness=8,
+        lateral_margin=6e-3,
+        axial_margin=8e-3,
+        n_probes=20,
+        pinna=dataclasses.replace(base.pinna, kind="none", mesh_path=None),
+    )
+
+    from typing import Literal
+
+    from headphone_sims.fdtd.sources import BakedSource
+    from headphone_sims.geometry.scene import BuiltScene
+
+    def baked(drive: 'Literal["tapered", "full", "dome"]') -> tuple[BuiltScene, BakedSource]:
+        scene = dataclasses.replace(
+            small, driver=dataclasses.replace(small.driver, dome_drive=drive)
+        )
+        built = build_scene(scene, device="cpu")
+        return built, built.simulation.baked_sources[0]
+
+    built, src = baked("tapered")
+    assert src.v_idx is not None and src.v_weight is not None
+    # z-face weights vs lateral radius of the face.
+    grid = built.grid
+    idx = src.v_idx[2].numpy()
+    w = src.v_weight[2].numpy()
+    shape = grid.velocity_shape(2)
+    j = (idx // shape[2]) % shape[1]
+    i = idx // (shape[1] * shape[2])
+    x = (i + 0.5) * grid.dx
+    y = (j + 0.5) * grid.dx
+    dc = np.asarray(built.driver_center)
+    lat = np.hypot(x - dc[0], y - dc[1])
+    r_dome = small.driver.dome_fraction * small.driver.diameter / 2.0
+    on_dome = lat <= r_dome - 1e-3
+    near_rim = lat >= small.driver.diameter / 2.0 - 2e-3
+    assert w[on_dome].min() > 0.9  # full amplitude on the dome
+    assert w[near_rim].max() < 0.2  # ~zero at the clamped rim
+    mid = (lat > r_dome + 2e-3) & (lat < small.driver.diameter / 2.0 - 4e-3)
+    assert 0.05 < w[mid].mean() < 0.95  # smooth taper in between
+
+    _, src_dome = baked("dome")
+    _, src_full = baked("full")
+
+    def vv(s: BakedSource) -> float:
+        return float(sum(wi.abs().sum() for wi in (s.v_weight or ())))
+
+    assert vv(src_dome) < vv(src) < vv(src_full)
+
+
+def test_roll_height_makes_donut_edge() -> None:
+    from headphone_sims.geometry.parametric import DomeProfile
+
+    p = DomeProfile(
+        radius=35e-3,
+        dome_fraction=0.43,
+        dome_depth=6e-3,
+        edge_height=3e-3,
+        surround="roll",
+        roll_height=3e-3,
+    )
+    r = torch.tensor([0.0, 15e-3, 25e-3, 34.9e-3])
+    h = p.height(r)
+    assert float(h[0]) == pytest.approx(6e-3, abs=1e-4)  # dome apex
+    crest = float(h[2])
+    assert crest > float(h[1]) - 1e-4 or crest > 4e-3  # rounded bump mid-edge
+    assert 4e-3 < crest < 5e-3
+    assert float(h[3]) < 1e-3  # falls to ~0 at the rim
+    # Backward compatibility: None keeps legacy amplitudes.
+    legacy = DomeProfile(
+        radius=35e-3, dome_fraction=0.43, dome_depth=6e-3, edge_height=3e-3, surround="cone"
+    )
+    assert float(legacy.height(torch.tensor([25e-3]))[0]) < 2e-3
+
+
+def test_taper_width_keeps_edge_moving() -> None:
+    """taper_width confines the roll-off to the rim: mid-edge stays ~full."""
+    import dataclasses
+
+    from headphone_sims.experiments.config import load_config
+
+    base = load_config("configs/hutubs_70mm_z1r_v2.yaml").scene
+    small = dataclasses.replace(
+        base,
+        dx=1.0e-3,
+        record_ms=0.1,
+        sponge_thickness=8,
+        lateral_margin=6e-3,
+        axial_margin=8e-3,
+        n_probes=20,
+        pinna=dataclasses.replace(base.pinna, kind="none", mesh_path=None),
+    )
+    built = build_scene(small, device="cpu")
+    src = built.simulation.baked_sources[0]
+    assert src.v_idx is not None and src.v_weight is not None
+    import numpy as np
+
+    grid = built.grid
+    shape = grid.velocity_shape(2)
+    idx = src.v_idx[2].numpy()
+    w = src.v_weight[2].numpy()
+    j = (idx // shape[2]) % shape[1]
+    i = idx // (shape[1] * shape[2])
+    dc = np.asarray(built.driver_center)
+    lat = np.hypot((i + 0.5) * grid.dx - dc[0], (j + 0.5) * grid.dx - dc[1])
+    mid_edge = (lat > 22e-3) & (lat < 28e-3)  # mid-surround, outside old taper
+    assert w[mid_edge].min() > 0.9  # stiff edge keeps moving
+    near_rim = lat > 33e-3
+    assert w[near_rim].max() < 0.4  # clamp zone rolls off
+
+
+def test_tapered_volume_velocity_matches_analytic() -> None:
+    """Sum of baked z-face weights * dx^2 equals the analytic integral of the
+    amplitude field over the diaphragm area (the taper really is applied)."""
+    import dataclasses
+
+    import numpy as np
+
+    from headphone_sims.experiments.config import load_config
+
+    base = load_config("configs/hutubs_70mm_z1r_v2.yaml").scene
+    small = dataclasses.replace(
+        base,
+        dx=1.0e-3,
+        record_ms=0.1,
+        sponge_thickness=8,
+        lateral_margin=6e-3,
+        axial_margin=8e-3,
+        n_probes=20,
+        pinna=dataclasses.replace(base.pinna, kind="none", mesh_path=None),
+    )
+    built = build_scene(small, device="cpu")
+    src = built.simulation.baked_sources[0]
+    assert src.v_weight is not None
+    vv_sim = float(src.v_weight[2].sum()) * built.grid.dx**2
+    # analytic: integral of A(r) 2*pi*r dr with taper only over last 5mm
+    R = small.driver.diameter / 2.0
+    w = small.driver.taper_width
+    assert w is not None
+    r = np.linspace(0, R, 20000)
+    amp = np.where(r <= R - w, 1.0, np.cos(np.pi / 2 * np.clip((r - (R - w)) / w, 0, 1)) ** 2)
+    vv_ana = float(np.trapezoid(amp * 2 * np.pi * r, r))
+    assert vv_sim == pytest.approx(vv_ana, rel=0.08)

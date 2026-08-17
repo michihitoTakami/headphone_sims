@@ -49,6 +49,12 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "NPY", "RUF"]
 
+[tool.ruff.lint.per-file-ignores]
+# Plot/report generators: Japanese strings (RUF001), matplotlib backend
+# setup before imports (E402), long inline-HTML lines (E501), and terse
+# plotting style are acceptable here.
+"scripts/report/*" = ["E402", "E501", "E702", "RUF001", "B007", "B905", "RUF005", "SIM115"]
+
 [tool.mypy]
 python_version = "3.12"
 strict = true

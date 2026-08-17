@@ -6,11 +6,16 @@ window per probe is [t_geo - pre, t_geo + post] with t_geo the geometric
 propagation time from the driver center.
 
 Metrics (per probe unless noted):
-- similarity: max normalized cross-correlation of the windowed pressure vs.
-  the reference probe (1.0 = same waveform up to delay/scale)
+- similarity: AMPLITUDE-AWARE waveform match vs. the reference probe
+  (2*max_xcorr/(Ex+Ey); 1.0 = same waveform AND same level up to a delay;
+  a probe at -10 dB scores ~0.58 even with a perfect shape)
+- shape_similarity: the legacy shape-only normalized cross-correlation
+- level_re_ref_db: broadband direct-window RMS level relative to the
+  reference probe
 - incidence_deg / incidence_deviation_deg: direction of the time-integrated
   acoustic intensity, and its angle to the geometric driver->probe ray
-- arrival_spread_ms (scalar): std over probes of (envelope peak time - t_geo)
+- arrival_spread_ms (scalar): std over probes of (envelope ONSET time -
+  t_geo); onset = first crossing of 50% of the window's envelope peak
 - spectral_deviation_db (n_bands, n_probes): band magnitude relative to the
   1/r-scaled reference probe
 - diffuseness: 1 - |integral of I dt| / integral of |I| dt over the window
@@ -35,10 +40,14 @@ SOUND_SPEED = 343.0
 @dataclass
 class PinnaMetrics:
     probe_positions: FloatArray  # (n, 3)
-    similarity: FloatArray  # (n,)
+    similarity: FloatArray  # (n,) amplitude-aware match vs reference
+    shape_similarity: FloatArray  # (n,) legacy shape-only xcorr
+    level_re_ref_db: FloatArray  # (n,) broadband level re the reference probe
     incidence_deviation_deg: FloatArray  # (n,)
     incidence_spread_deg: float  # dispersion of intensity directions across probes
-    arrival_error_ms: FloatArray  # (n,) envelope peak time minus geometric time
+    # Onset time minus geometric time; contains a pulse-shape constant offset
+    # (onset leads the envelope peak), so the SPREAD is the meaningful number.
+    arrival_error_ms: FloatArray
     arrival_spread_ms: float
     band_centers: FloatArray  # (n_bands,)
     spectral_deviation_db: FloatArray  # (n_bands, n)
@@ -48,6 +57,9 @@ class PinnaMetrics:
         return {
             "similarity_mean": float(np.mean(self.similarity)),
             "similarity_min": float(np.min(self.similarity)),
+            "shape_similarity_mean": float(np.mean(self.shape_similarity)),
+            "level_spread_db": float(np.std(self.level_re_ref_db)),
+            "level_min_db": float(np.min(self.level_re_ref_db)),
             "incidence_deviation_deg_mean": float(np.mean(self.incidence_deviation_deg)),
             "incidence_deviation_deg_max": float(np.max(self.incidence_deviation_deg)),
             "incidence_spread_deg": self.incidence_spread_deg,
@@ -83,20 +95,38 @@ def compute_metrics(
     window_pre: float = 0.2e-3,
     window_post: float = 0.5e-3,
     band_min: float = 1000.0,
-    band_max: float = 20_000.0,
+    band_max: float = 12_500.0,
+    band: tuple[float, float] | None = (1000.0, 12_500.0),
 ) -> PinnaMetrics:
+    """``band`` zero-phase band-limits p and v before all metrics — the
+    default 1-12.5 kHz drops the >14 kHz region, which contributes little to
+    spatial hearing (pinna cues live mainly in ~4-12 kHz). Pass None for the
+    legacy full-bandwidth behavior, or e.g. (5000, 10000) to focus on the
+    core spatial-cue band.
+    """
     center = np.asarray(driver_center, dtype=np.float64)
     n_probes = result.p.shape[1]
     t_geo, masks = _direct_window_masks(result, center, window_pre, window_post)
 
-    p_win = result.p * masks  # (n_steps, n)
-    v_win = result.v * masks[None]  # (3, n_steps, n)
+    p_all = result.p
+    v_all = result.v
+    if band is not None:
+        p_all = signals.bandpass_zero_phase(p_all, result.dt, band[0], band[1], axis=0)
+        v_all = signals.bandpass_zero_phase(v_all, result.dt, band[0], band[1], axis=1)
+    p_win = p_all * masks  # (n_steps, n)
+    v_win = v_all * masks[None]  # (3, n_steps, n)
 
-    # (a) waveform similarity vs. reference probe.
+    # (a) waveform match vs. reference probe: amplitude-aware (primary) and
+    # shape-only (secondary), plus explicit level.
     ref = p_win[:, reference_index]
     similarity = np.zeros(n_probes)
+    shape_similarity = np.zeros(n_probes)
     for i in range(n_probes):
-        similarity[i], _ = signals.normalized_max_crosscorr(p_win[:, i], ref)
+        similarity[i] = signals.amplitude_aware_match(p_win[:, i], ref)
+        shape_similarity[i], _ = signals.normalized_max_crosscorr(p_win[:, i], ref)
+    rms = np.sqrt((p_win**2).sum(axis=0))
+    ref_rms = max(rms[reference_index], 1e-30)
+    level_re_ref_db = 20.0 * np.log10(np.maximum(rms, 1e-30) / ref_rms)
 
     # (b) incidence direction from time-integrated intensity I = p*v.
     intensity = np.einsum("tn,ctn->cn", p_win, v_win) * result.dt  # (3, n)
@@ -113,10 +143,11 @@ def compute_metrics(
     cos_spread = np.clip(np.sum(i_dir * mean_dir[:, None], axis=0), -1.0, 1.0)
     incidence_spread = float(np.degrees(np.std(np.arccos(cos_spread))))
 
-    # (c) arrival-time error and spread.
+    # (c) arrival-time error and spread (robust onset, not peak).
     env = signals.envelope(p_win, axis=0)
-    t_peak = np.argmax(env, axis=0) * result.dt
-    arrival_error = (t_peak - t_geo) * 1e3  # ms
+    t_on = np.array([signals.onset_time(env[:, i], result.dt) for i in range(n_probes)])
+    arrival_error = (t_on - t_geo) * 1e3  # ms
+    arrival_error = np.nan_to_num(arrival_error, nan=0.0)
     arrival_spread = float(np.std(arrival_error))
 
     # (d) spectral deviation vs. 1/r-scaled reference.
@@ -137,6 +168,8 @@ def compute_metrics(
     return PinnaMetrics(
         probe_positions=result.positions,
         similarity=similarity,
+        shape_similarity=shape_similarity,
+        level_re_ref_db=level_re_ref_db,
         incidence_deviation_deg=incidence_deviation,
         incidence_spread_deg=incidence_spread,
         arrival_error_ms=arrival_error,
