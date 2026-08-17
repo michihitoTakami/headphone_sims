@@ -1,0 +1,52 @@
+# DCA model with the PHOTO-MEASURED AMTS plug pattern (E3 insert photo).
+#
+# Differences from hutubs_dca_amts.yaml (idealized alternating cells):
+# - pitch 3.2mm / tube r 1.1mm (photo: ~22 columns across 72mm, ~16 rows/45mm)
+# - explicit amts_plug_cells map extracted from the photo (268 lattice sites,
+#   54 plugged = 20%; homography lattice fit + per-cell open/plug
+#   classification, manually verified). Plugged cell = closed-top quarter-wave
+#   branch open to the driver side (f0 = c/4L, L = local sloped depth 3-15mm).
+# - plug density is highest at the thick end (right in the photo, +a) where
+#   the quarter-wave tuning lands in-band, and near one edge row; the thin
+#   half is almost all open through-tubes.
+# Orientation assumptions (documented): photo horizontal = 72mm slope axis
+# with thick end at +a; the 45mm-axis sign is unknowable from the photo.
+# 6 tab-occluded cells assigned "open" (majority class).
+name: hutubs_dca_amts_real
+device: null
+compare_without_filters: true
+scene:
+  dx: 0.5e-3
+  distance: 24.0e-3
+  record_ms: 2.5
+  snapshot_every: 0
+  driver:
+    shape: rect
+    width: 45.0e-3
+    height: 72.0e-3
+    tilt_deg: 0.0
+  filters:
+    - kind: slots           # magnet-bar array (unchanged)
+      shape: rect
+      width: 45.0e-3
+      height: 72.0e-3
+      slot_width: 2.5e-3
+      pitch: 6.5e-3
+      pattern_angle_deg: 0.0
+      thickness: 4.0e-3
+      standoff: 3.0e-3
+    - kind: amts
+      shape: rect
+      width: 45.0e-3
+      height: 72.0e-3
+      hole_radius: 1.1e-3
+      pitch: 3.2e-3
+      thickness: 15.0e-3
+      amts_min_thickness: 3.0e-3
+      amts_plug_wall: 1.0e-3
+      standoff: 13.5e-3
+      amts_plug_cells: [[-8, 1], [-8, 2], [-8, 3], [-7, -2], [-7, 1], [-7, 2], [-7, 4], [-6, -7], [-6, -6], [-6, -4], [-6, -1], [-6, 3], [-6, 7], [-5, -7], [-5, -3], [-5, -1], [-5, 7], [-5, 8], [-4, -1], [-4, 4], [-4, 9], [-3, -10], [-3, -7], [-2, -9], [-2, 10], [-1, -9], [-1, 8], [0, 1], [0, 8], [0, 9], [0, 10], [0, 11], [1, 2], [1, 3], [1, 7], [1, 9], [1, 10], [2, 1], [2, 5], [2, 7], [2, 8], [2, 9], [2, 10], [3, 2], [3, 4], [3, 6], [4, -3], [4, 1], [4, 4], [4, 6], [4, 8], [5, 2], [5, 3], [5, 7]]
+  pinna:
+    kind: mesh
+    mesh_path: data/hutubs/pp1_3DheadMesh.ply
+    side: left

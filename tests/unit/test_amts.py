@@ -171,3 +171,67 @@ scene:
     )
     with pytest.raises(ValueError, match="unknown FilterSpec keys"):
         load_config(bad)
+
+
+PLUGGED = AmtsHexCells(
+    tube_radius=1.5e-3,
+    pitch=4.5e-3,
+    slope_length=30e-3,
+    min_thickness=3e-3,
+    max_thickness=15e-3,
+    plug_cells=((0, 1),),
+    plug_wall=1e-3,
+)
+
+
+def _plug_open_at(a_mm: float, b_mm: float, h_mm: float) -> bool:
+    a = torch.tensor([a_mm * 1e-3], dtype=torch.float64)
+    b = torch.tensor([b_mm * 1e-3], dtype=torch.float64)
+    frac = torch.tensor([h_mm * 1e-3 / PLUGGED.max_thickness - 0.5], dtype=torch.float64)
+    return bool(PLUGGED.open_mask_3d(a, b, frac)[0])
+
+
+def test_amts_plug_map_overrides_parity() -> None:
+    # With an explicit map, unlisted cells are through-tubes regardless of
+    # parity: (m=0, n=2) at a=9mm has even parity anyway; (m=1, n=0) at
+    # (a=2.25, b=3.897) has odd parity but is NOT listed -> open through.
+    row_h = 4.5 * (3.0**0.5) / 2.0
+    # z_top(2.25) = 9.9mm: open at the bottom AND just below the local top —
+    # the parity rule would have closed the bottom (bottom_wall) and narrowed
+    # the top to the neck.
+    for h in (0.5, 5.0, 9.5):
+        assert _plug_open_at(2.25, row_h, h)
+
+
+def test_amts_plugged_cell_is_closed_top_quarter_wave() -> None:
+    # Cell (m=0, n=1) at a=4.5mm is listed: open from the bottom (driver
+    # side), capped by 1mm of solid at the local top z_top(4.5)=10.8mm.
+    assert _plug_open_at(4.5, 0.0, 0.5)  # bottom is OPEN (no bottom wall)
+    assert _plug_open_at(4.5, 0.0, 5.0)  # cavity
+    assert not _plug_open_at(4.5, 0.0, 10.3)  # plug cap (9.8-10.8mm solid)
+    assert _plug_open_at(4.5, 0.0, 11.2)  # above the sloped top: carved air
+
+
+def test_amts_plug_cells_yaml_roundtrip(tmp_path: Path) -> None:
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text(
+        """
+name: t
+scene:
+  driver: {shape: rect, width: 45.0e-3, height: 72.0e-3}
+  filters:
+    - kind: amts
+      shape: rect
+      width: 45.0e-3
+      height: 72.0e-3
+      thickness: 15.0e-3
+      amts_plug_cells: [[-2, 3], [0, 0], [4, -5]]
+  pinna: {kind: none}
+""",
+        encoding="utf-8",
+    )
+    spec = load_config(cfg).scene.filters[0]
+    assert spec.amts_plug_cells == ((-2, 3), (0, 0), (4, -5))
+    pat = spec.pattern()
+    assert isinstance(pat, AmtsHexCells)
+    assert pat.plug_cells == ((-2, 3), (0, 0), (4, -5))

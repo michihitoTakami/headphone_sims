@@ -145,6 +145,14 @@ class AmtsHexCells(HolePattern):
     the pad cavity). Use with a plate ``thickness == max_thickness``. NOTE:
     the plate's reported porosity counts this carved-away air as "open", so it
     is not meaningful for this pattern.
+
+    ``plug_cells`` overrides the parity rule with an explicit cell map
+    (photo-measured real part): listed lattice cells (m, n) — m the row index
+    along the b-axis, n the column index along the sloped a-axis — become
+    **plugged** cells: the tube stays open from the driver-side bottom but is
+    capped by ``plug_wall`` of solid at the local top (a closed-top quarter-
+    wave side branch facing the driver, f0 = c/4L). All unlisted cells are
+    open through-tubes; the neck/bottom-wall Helmholtz geometry is not used.
     """
 
     tube_radius: float
@@ -155,13 +163,32 @@ class AmtsHexCells(HolePattern):
     neck_radius: float = 1.2e-3
     neck_length: float = 1.0e-3
     bottom_wall: float = 1.0e-3
+    plug_cells: tuple[tuple[int, int], ...] | None = None
+    plug_wall: float = 1.0e-3
 
     def _cells(self, a: torch.Tensor, b: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """(squared distance to nearest cell center, is-Helmholtz-cell)."""
+        """(squared distance to nearest cell center, is-closed-cell).
+
+        The second value marks Helmholtz cells (parity rule) or plugged cells
+        (explicit ``plug_cells`` map) depending on the configured mode.
+        """
         row_h = self.pitch * math.sqrt(3.0) / 2.0
+        lut = None
+        lut_m0 = lut_n0 = 0
+        if self.plug_cells is not None:
+            ms = [c[0] for c in self.plug_cells] or [0]
+            ns = [c[1] for c in self.plug_cells] or [0]
+            lut_m0, lut_n0 = min(ms), min(ns)
+            lut = torch.zeros(
+                (max(ms) - lut_m0 + 1, max(ns) - lut_n0 + 1),
+                dtype=torch.bool,
+                device=a.device,
+            )
+            for cm, cn in self.plug_cells:
+                lut[cm - lut_m0, cn - lut_n0] = True
         m0 = torch.round(b / row_h)
         best = torch.full_like(a, float("inf"))
-        helm = torch.zeros_like(a, dtype=torch.bool)
+        closed = torch.zeros_like(a, dtype=torch.bool)
         for dm in (-1.0, 0.0, 1.0):
             m = m0 + dm
             b_row = m * row_h
@@ -170,11 +197,23 @@ class AmtsHexCells(HolePattern):
             n = torch.round((a - offset) / self.pitch)
             a_near = n * self.pitch + offset
             d2 = (a - a_near) ** 2 + (b - b_row) ** 2
-            parity = (m_int + n.to(torch.int64)).remainder(2) == 1
+            n_int = n.to(torch.int64)
+            if lut is None:
+                is_closed = (m_int + n_int).remainder(2) == 1
+            else:
+                mi = (m_int - lut_m0).clamp(0, lut.shape[0] - 1)
+                ni = (n_int - lut_n0).clamp(0, lut.shape[1] - 1)
+                inside = (
+                    (m_int >= lut_m0)
+                    & (m_int - lut_m0 < lut.shape[0])
+                    & (n_int >= lut_n0)
+                    & (n_int - lut_n0 < lut.shape[1])
+                )
+                is_closed = inside & lut[mi, ni]
             closer = d2 < best
             best = torch.where(closer, d2, best)
-            helm = torch.where(closer, parity, helm)
-        return best, helm
+            closed = torch.where(closer, is_closed, closed)
+        return best, closed
 
     def open_mask(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         # 2D fallback: every cell shows its tube/cavity cross-section.
@@ -188,16 +227,21 @@ class AmtsHexCells(HolePattern):
         t = (a / self.slope_length + 0.5).clamp(0.0, 1.0)  # 0 = thin (-a), 1 = thick (+a)
         z_top = self.min_thickness + (self.max_thickness - self.min_thickness) * t
         above = h > z_top
-        d2, helm = self._cells(a, b)
+        d2, closed = self._cells(a, b)
         in_tube = d2 <= self.tube_radius**2
-        in_neck = d2 <= self.neck_radius**2
-        through_open = ~helm & in_tube
-        helm_open = (
-            helm
-            & (h > self.bottom_wall)
-            & torch.where(h > z_top - self.neck_length, in_neck, in_tube)
-        )
-        return above | through_open | helm_open
+        through_open = ~closed & in_tube
+        if self.plug_cells is not None:
+            # Plugged cell: open bottom (driver side), capped by plug_wall at
+            # the local top — a closed-top quarter-wave branch.
+            closed_open = closed & in_tube & (h < z_top - self.plug_wall)
+        else:
+            in_neck = d2 <= self.neck_radius**2
+            closed_open = (
+                closed
+                & (h > self.bottom_wall)
+                & torch.where(h > z_top - self.neck_length, in_neck, in_tube)
+            )
+        return above | through_open | closed_open
 
 
 @dataclass(frozen=True)

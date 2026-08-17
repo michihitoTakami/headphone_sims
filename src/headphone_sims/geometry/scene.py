@@ -131,6 +131,11 @@ class FilterSpec:
     amts_neck_radius: float = 1.2e-3
     amts_neck_length: float = 1e-3
     amts_bottom_wall: float = 1e-3
+    # Explicit cell map (photo-measured real part): listed (m, n) lattice
+    # cells become closed-top quarter-wave plugs open to the driver side;
+    # all other cells are open through-tubes (parity/Helmholtz rule unused).
+    amts_plug_cells: tuple[tuple[int, int], ...] | None = None
+    amts_plug_wall: float = 1e-3
 
     def pattern(self) -> HolePattern | None:
         if self.kind == "hex":
@@ -156,6 +161,8 @@ class FilterSpec:
                 neck_radius=self.amts_neck_radius,
                 neck_length=self.amts_neck_length,
                 bottom_wall=self.amts_bottom_wall,
+                plug_cells=self.amts_plug_cells,
+                plug_wall=self.amts_plug_wall,
             )
         if self.kind == "fib":
             return FibonacciSpirals(
