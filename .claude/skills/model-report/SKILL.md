@@ -20,6 +20,26 @@ uv run python scripts/report/make_all.py     # 2) 全図表 + summary + レポ�
 強制再実行はnpzを削除する。`make_all.py` は fig_main → fig_coupling →
 fig_fr_overlay → fig_local_uniformity → make_report の順に実行する。
 
+## ロバスト性セクション(個人差・再装着、issue #3)
+
+レポート後半の2セクションは `scripts/robustness/` が生成する。被験者パネルや
+摂動条件を変えたときだけ再実行すればよい(通常の指標更新では不要):
+
+```bash
+uv run python scripts/robustness/verify_subjects.py        # 検証+形状特徴(data/hutubs の全pp)
+uv run python scripts/robustness/select_subjects.py 8      # 多様パネル選定 → runs/subjects_selected.json
+uv run python scripts/robustness/run_subjects.py           # 3モデル×パネル×4ラン(GPU、~12分/被験者)
+uv run python scripts/robustness/run_reseat.py             # 4モデル×4摂動×4ラン(GPU、~1時間)
+uv run python scripts/robustness/fig_subject_comb.py       # C(f)個人間分散+ノッチ衝突判定
+uv run python scripts/robustness/fig_subject_variance.py   # ポスト・ピンナ指標の被験者間σ+仮説検証
+uv run python scripts/robustness/fig_reseat.py             # 再装着感度(df/dmm、指標変動)
+```
+
+- pp1は再実行しない(batch3_*/bare_* を再利用)。他被験者は ms_pp{N}_*、再装着は rs_*
+- メッシュは `headphone_sims.geometry.datasets.fetch_hutubs_mesh`(全96番あるわけではない、404多数)
+- 再装着の垂直ズレは `PinnaSpec.offset_y`(ピンナ+外耳道+プローブがy移動、ドライバ固定)
+- 集計JSON: subject_comb_summary / subject_variance_summary / reseat_summary(レポート表の自動反映元)
+
 ## Artifact発行
 
 **既存レポートの更新は必ず同じURLに対して行う**(新規作成しない):

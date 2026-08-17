@@ -82,6 +82,35 @@ def map_corr(a_xy, a_lvl, b_xy, b_lvl) -> float:
     return float(np.corrcoef(a_lvl[ok], b_lvl[j[ok]])[0, 1])
 
 
+def comb_shift_hz(f0, c0, f1, c1, band=SPATIAL_CORE, max_shift_oct=0.35) -> float:
+    """Whole-comb frequency shift (Hz at the band center) via log-f xcorr.
+
+    Deepest-notch tracking hops between comb teeth under mm-scale re-seat, so
+    the translation of the whole C(f) pattern is estimated instead: both
+    curves are resampled on a uniform log2-frequency grid and the lag
+    maximizing their correlation gives the shift in octaves.
+    """
+    n = 512
+    lg = np.linspace(np.log2(band[0]), np.log2(band[1]), n)
+    a = np.interp(lg, np.log2(f0), c0)
+    b = np.interp(lg, np.log2(f1), c1)
+    a -= a.mean()
+    b -= b.mean()
+    step = lg[1] - lg[0]
+    max_lag = int(max_shift_oct / step)
+    best_lag, best = 0, -np.inf
+    for lag in range(-max_lag, max_lag + 1):
+        if lag >= 0:
+            x, y = a[: n - lag], b[lag:]
+        else:
+            x, y = a[-lag:], b[: n + lag]
+        r = float(np.corrcoef(x, y)[0, 1])
+        if r > best:
+            best, best_lag = r, lag
+    f_center = float(np.sqrt(band[0] * band[1]))
+    return f_center * (2.0 ** (best_lag * step) - 1.0)
+
+
 def main() -> None:
     summary: dict = {}
     for model, (label, color) in MODELS.items():
@@ -101,20 +130,19 @@ def main() -> None:
             st = comb_stats(f, c)
             st["dC_rms_db"] = float(np.sqrt(np.mean((ci[core] - c0[core]) ** 2)))
             st["notch_shift_hz"] = st["notch_hz"] - comb_stats(f0, c0)["notch_hz"]
+            # whole-comb translation (deepest-notch tracking tooth-hops)
+            st["comb_shift_hz"] = 0.0 if cond == "base" else comb_shift_hz(f0, c0, f, c)
             st["metrics"] = mets[cond]
             entry["conditions"][cond] = st
-        # df/dmm per axis from the deepest-notch track (guard tooth-hopping
-        # by falling back to the RMS-change slope in the report prose).
-        ax_pts = [("axm1", -1.0), ("base", 0.0), ("axp2", 2.0)]
-        vy_pts = [("vym2", -2.0), ("base", 0.0), ("vyp2", 2.0)]
+        # df/dmm per axis from the whole-comb shift (through-origin fit)
+        ax_pts = [("axm1", -1.0), ("axp2", 2.0)]
+        vy_pts = [("vym2", -2.0), ("vyp2", 2.0)]
         for name, pts in (("axial", ax_pts), ("vertical", vy_pts)):
             mm = np.array([m for _, m in pts])
-            fn = np.array([entry["conditions"][c]["notch_hz"] for c, _ in pts])
-            entry[f"{name}_notch_hz_per_mm"] = float(np.polyfit(mm, fn, 1)[0])
+            sh = np.array([entry["conditions"][c]["comb_shift_hz"] for c, _ in pts])
+            entry[f"{name}_shift_hz_per_mm"] = float((sh @ mm) / (mm @ mm))
             dc = np.array([entry["conditions"][c]["dC_rms_db"] for c, _ in pts])
-            entry[f"{name}_dC_rms_db_per_mm"] = float(
-                np.mean(dc[mm != 0] / np.abs(mm[mm != 0]))
-            )
+            entry[f"{name}_dC_rms_db_per_mm"] = float(np.mean(dc / np.abs(mm)))
         # per-model variation score: worst-case core-similarity drop + RMS comb change
         sims = np.array([mets[c]["similarity_mean"] for c in CONDS])
         entry["similarity_range"] = float(sims.max() - sims.min())
@@ -128,8 +156,8 @@ def main() -> None:
             entry["conditions"][cond]["map10k_corr"] = map_corr(xy0, l0, xy1, l1)
         summary[model] = entry
         print(
-            f"{model:5s} notch df/dmm ax {entry['axial_notch_hz_per_mm']:+.0f} "
-            f"vy {entry['vertical_notch_hz_per_mm']:+.0f} Hz/mm  "
+            f"{model:5s} comb df/dmm ax {entry['axial_shift_hz_per_mm']:+.0f} "
+            f"vy {entry['vertical_shift_hz_per_mm']:+.0f} Hz/mm  "
             f"ΔC_rms max {entry['dC_rms_db_max']:.2f} dB  "
             f"sim range {entry['similarity_range']:.3f}",
             flush=True,
@@ -152,15 +180,16 @@ def main() -> None:
     ax.set_xlim(2, 16); ax.grid(alpha=0.3); ax.legend(fontsize=8)
     ax.set_xlabel("周波数 (kHz)"); ax.set_ylabel("C(f) (dB)")
     ax.set_title("C(f): 実線=基準、破線=軸+2mm", fontsize=11)
-    # (b) notch frequency per condition
+    # (b) whole-comb translation per condition
     ax = axes[0][1]
     for model, (label, color) in MODELS.items():
-        y = [summary[model]["conditions"][c]["notch_hz"] / 1e3 for c in CONDS]
+        y = [summary[model]["conditions"][c]["comb_shift_hz"] for c in CONDS]
         ax.plot(range(len(CONDS)), y, "o-", color=color, lw=1.6, label=label)
+    ax.axhline(0, color="#999", lw=0.7)
     ax.set_xticks(range(len(CONDS)))
     ax.set_xticklabels([COND_LABEL[c] for c in CONDS], fontsize=8.5)
-    ax.grid(alpha=0.3); ax.set_ylabel("最深ノッチ周波数 (kHz)")
-    ax.set_title("コームノッチの移動(装着ズレ)", fontsize=11)
+    ax.grid(alpha=0.3); ax.set_ylabel("コーム全体の移動 (Hz, log-f相互相関)")
+    ax.set_title("コームパターンの平行移動(装着ズレ)", fontsize=11)
     # (c) RMS comb change per condition
     ax = axes[1][0]
     width = 0.19
