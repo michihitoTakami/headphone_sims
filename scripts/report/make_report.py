@@ -152,6 +152,22 @@ def reseat_table() -> str:
     return "\n".join(rows)
 
 
+def ear_ranking_table() -> str:
+    """Per-ear comb-depth ranking (mean swing across the 4 models)."""
+    rows = ["<tr><th>耳</th><th>コーム振れ幅 平均 [dB]</th><th>最悪モデル時 [dB]</th>"
+            "<th>最深ノッチ [dB]</th><th>固有主ノッチ [dB]</th><th>コンカ深さ [mm]</th></tr>"]
+    for r in comb["ear_ranking"]["ranking"]:
+        rows.append(
+            f"<tr><td>pp{r['subject']}</td>"
+            f"<td class='num'>{r['swing_mean_db']:.1f}</td>"
+            f"<td class='num'>{r['swing_max_db']:.1f}</td>"
+            f"<td class='num'>{r['notch_min_db']:.1f}</td>"
+            f"<td class='num'>{r['own_notch_db']:.1f}</td>"
+            f"<td class='num'>{r['concha_depth_mm']:.1f}</td></tr>"
+        )
+    return "\n".join(rows)
+
+
 def preservation_table() -> str:
     """Per-model preservation decomposition vs the transparent-driver reference."""
     keys = [
@@ -530,6 +546,20 @@ pp1の序列(LCD > Z1R > DX > DCA)がほぼ丸ごと入れ替わった —
 干渉ベースの機構</strong>であり、想定の幾何(反射経路)から外れた耳では抑制が外れて逆に共振する。
 抵抗性の吸収(実機に加わる熱粘性損失)は位相に依存しないため、実機ではこの外れ値は
 剛体モデルより緩和されるはず — 剛体近似はDCAの個人間分散を過大評価する側に働く。</p>
+
+<h4>耳の側から見る — 耳介由来のコーム深さランキング</h4>
+<p>同じデータを耳を軸に転置すると、「どの耳がコームを深くするか」のランキングになる
+(4モデル平均のコーム振れ幅):</p>
+<table>{ear_ranking_table()}</table>
+<p>コーム深さと最も強く相関する形状特徴は<strong>コンカ深さ</strong>
+(Spearman +0.60、Pearson +0.54; 外耳道奥行き +0.4前後、n=8の示唆的水準)—
+深いコンカは強い凹面反射鏡として働き、前面との往復干渉を増幅する、という物理と整合する。
+一方、耳介固有の主ノッチ深さ(透明基準TF)とは弱い負相関(−0.40):
+「固有ノッチが深い耳ほどコームも深い」わけではなく、コーム増幅は主にコンカの器の深さが担う。
+なお<strong>pp1は8耳中2番目にマイルドな耳</strong>(16.2dB)であり、
+セクション1〜5のpp1単独比較がコーム影響を甘めに見せていた構造的理由がここにある。
+首位のpp82(コーム平均21.6dB、DCAで振れ幅37dB)のような深い耳では、
+どのモデルでもコームがピンナ固有ノッチ(10〜25dB)と同等以上のスケールに達する。</p>
 
 <h3>ポスト・ピンナ指標の被験者間分散 — ロバスト性ランキング</h3>
 <figure><img src="data:image/png;base64,{imgs['subj_var']}" alt="指標の被験者間分散"></figure>

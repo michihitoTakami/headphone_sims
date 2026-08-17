@@ -115,6 +115,60 @@ def main() -> None:
             f"/{summary[model]['collisions_total'] + summary[model]['false_cues_total']}"
         )
 
+    # Ear-derived comb-depth ranking: per-subject swing across models, with
+    # pinna shape features and the intrinsic (transparent-TF) main-notch depth.
+    from common import transparent_paths
+    from scipy.signal import find_peaks
+    from scipy.stats import pearsonr, spearmanr
+
+    verify = {
+        r["subject"]: r
+        for r in json.load(open("runs/subjects_verify.json"))["results"]
+    }
+    grid = np.geomspace(4000, 12500, 384)
+
+    def tf_db(paths):
+        f, h = canal_tf(*paths)
+        sel = (f >= 3600) & (f <= 13800)
+        return np.interp(grid, f[sel], 20 * np.log10(smooth(f[sel], h[sel]) + 1e-12))
+
+    ranking = []
+    for s in subjects:
+        rows = [
+            next(x for x in summary[m]["per_subject"] if x["subject"] == s)
+            for m in MODELS
+        ]
+        proms = []
+        for m in MODELS:
+            tf = tf_db(transparent_paths(s, m))
+            idx, pr = find_peaks(-tf, prominence=2.0)
+            proms.append(float(max(pr["prominences"])) if len(idx) else 0.0)
+        ranking.append({
+            "subject": s,
+            "swing_mean_db": float(np.mean([r["swing_db"] for r in rows])),
+            "swing_max_db": float(np.max([r["swing_db"] for r in rows])),
+            "notch_min_db": float(np.min([r["notch_db"] for r in rows])),
+            "own_notch_db": float(np.mean(proms)),
+            "recession_mm": verify[s]["recession_mm"],
+            "concha_depth_mm": verify[s]["concha_depth_mm"],
+        })
+    ranking.sort(key=lambda r: -r["swing_mean_db"])
+    x_sw = [r["swing_mean_db"] for r in ranking]
+    corrs = {}
+    for feat in ("recession_mm", "concha_depth_mm", "own_notch_db"):
+        xf = [r[feat] for r in ranking]
+        corrs[feat] = {
+            "pearson": float(pearsonr(xf, x_sw)[0]),
+            "spearman": float(spearmanr(xf, x_sw)[0]),
+        }
+    summary["ear_ranking"] = {"ranking": ranking, "swing_corr": corrs}
+    for r in ranking:
+        print(
+            f"ear pp{r['subject']:<3d} swing {r['swing_mean_db']:.1f}dB "
+            f"(max {r['swing_max_db']:.1f}) concha {r['concha_depth_mm']:.1f}mm"
+        )
+    print("swing corr:", {k: round(v["spearman"], 2) for k, v in corrs.items()})
+
     ax_notch.set_xticks(range(len(MODELS)))
     ax_notch.set_xticklabels([v[0].split("(")[0] for v in MODELS.values()], fontsize=9)
     ax_notch.set_ylabel("ハードウェアノッチ周波数 (kHz)")
