@@ -32,6 +32,7 @@ MODELS = {
     "z1r": ("MDR-Z1R型", "#C05B21"),
     "lcd": ("LCD型", "#46688A"),
     "dx": ("DX10000CL型", "#2E7D51"),
+    "dca2": ("DCA型(AMTS)", "#7A4B94"),
 }
 KEYS = [
     ("similarity_mean", "波形一致(振幅込み)", +1),

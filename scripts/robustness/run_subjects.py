@@ -1,13 +1,22 @@
 """Multi-subject runs for the individual-robustness study (issue #3, step 3).
 
-For each subject in the panel and each of the 3 v2 models (Z1R / LCD / DX),
-runs the same 4 simulations as the pp1 report set:
+For each subject in the panel and each of the 4 models (Z1R / LCD / DX /
+DCA-AMTS real plug map), runs the same 4 simulations as the pp1 report set:
 
 - structured incident / pinna  (runs/ms_pp{N}_{model}_{phase}.npz, with v)
 - bare-source incident / pinna (runs/ms_pp{N}_bare_{model}_{phase}.npz)
 
-pp1 is NOT run here — its batch3_* / bare_* outputs are reused by the
-analysis. Skips any existing output; delete the .npz to force a re-run.
+Additionally runs a model-independent TRANSPARENT-REFERENCE pair per subject
+(runs/ms_pp{N}_ideal_{phase}.npz): a 10 mm mini piston, no baffle, no
+structure, at a common 20 mm distance — the subject's canonical near-field
+pinna response, the reference for the preservation decomposition
+(fig_preservation.py). The common small source deliberately does NOT match
+any model's aperture: driver-geometry deviation is measured against it
+(P_drv) and thereby kept OUT of the structure-only term (P_str).
+
+pp1's model runs are NOT run here — batch3_* / bare_* outputs are reused by
+the analysis (the ideal pair IS run for pp1). Skips any existing output;
+delete the .npz to force a re-run.
 
 Usage (repo root):
     uv run python scripts/robustness/run_subjects.py 2 10 58 ...
@@ -29,6 +38,7 @@ MODELS = [
     ("z1r", "configs/hutubs_70mm_z1r_v2.yaml"),
     ("lcd", "configs/hutubs_90mm_planar_v2.yaml"),
     ("dx", "configs/hutubs_40mm_dome_v2.yaml"),
+    ("dca2", "configs/hutubs_dca_amts_real.yaml"),
 ]
 
 
@@ -53,6 +63,22 @@ def run_one(scene_cfg, out: str, incident: bool, save_v: bool) -> None:
     print(f"done {out} ({time.time() - t0:.0f}s)", flush=True)
 
 
+def ideal_scene(mesh_path: str):
+    """Common transparent-reference scene: mini piston, no baffle/structure."""
+    from headphone_sims.geometry.scene import DriverSpec, PinnaSpec, SceneConfig
+
+    return SceneConfig(
+        dx=0.5e-3,
+        distance=20e-3,
+        driver=DriverSpec(diameter=10e-3),
+        filters=(),
+        baffle=False,
+        pinna=PinnaSpec(kind="mesh", mesh_path=mesh_path, side="left"),
+        record_ms=2.5,
+        snapshot_every=0,
+    )
+
+
 def main() -> None:
     if len(sys.argv) > 1:
         subjects = [int(a) for a in sys.argv[1:]]
@@ -60,6 +86,12 @@ def main() -> None:
         with open("runs/subjects_selected.json", encoding="utf-8") as fh:
             subjects = json.load(fh)["subjects"]
     print("subjects:", subjects, flush=True)
+    for subject in [1, *subjects]:
+        scene = ideal_scene(f"data/hutubs/pp{subject}_3DheadMesh.ply")
+        for phase, incident in [("incident", True), ("pinna", False)]:
+            run_one(
+                scene, f"runs/ms_pp{subject}_ideal_{phase}.npz", incident, save_v=False
+            )
     for subject in subjects:
         mesh_path = f"data/hutubs/pp{subject}_3DheadMesh.ply"
         for key, cfg_path in MODELS:

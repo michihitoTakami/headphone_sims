@@ -1,4 +1,4 @@
-"""Inter-subject coupling-comb variance, 3 models (issue #3, step 4a/4b).
+"""Inter-subject coupling-comb variance, 4 models (issue #3, step 4a/4b).
 
 Per subject x model: C(f) (report protocol), comb swing / deepest notch in
 the 5-10 kHz core band, and the collision test between the hardware comb
@@ -38,6 +38,7 @@ MODELS = {
     "z1r": ("MDR-Z1R型(開口71%)", "#C05B21"),
     "lcd": ("LCD型(開口32%)", "#46688A"),
     "dx": ("DX10000CL型(開口52%)", "#2E7D51"),
+    "dca2": ("DCA型(AMTS実測)", "#7A4B94"),
 }
 COLLISION_OCT = 1 / 12  # ~ +/-6% in frequency
 
@@ -47,12 +48,14 @@ def main() -> None:
         subjects = json.load(fh)["panel_with_pp1"]
 
     summary: dict = {}
-    fig, axes = plt.subplots(2, 2, figsize=(13.5, 8.6))
-    ax_notch = axes[1][1]
+    fig = plt.figure(figsize=(13.5, 12.5))
+    gs = fig.add_gridspec(3, 2, height_ratios=[1.0, 1.0, 0.85], hspace=0.42, wspace=0.22)
+    model_axes = [fig.add_subplot(gs[i // 2, i % 2]) for i in range(len(MODELS))]
+    ax_notch = fig.add_subplot(gs[2, :])
     shades = plt.cm.cividis(np.linspace(0.05, 0.9, len(subjects)))
 
     for mi, (model, (label, color)) in enumerate(MODELS.items()):
-        ax = axes.flat[mi]
+        ax = model_axes[mi]
         rows = []
         for si, subject in enumerate(subjects):
             freqs, c = coupling_db(
@@ -117,7 +120,7 @@ def main() -> None:
     ax_notch.set_ylabel("ハードウェアノッチ周波数 (kHz)")
     ax_notch.set_title("コームノッチの被験者間ばらつき(5-10 kHz核心帯)", fontsize=11)
     ax_notch.grid(alpha=0.3, axis="y")
-    axes.flat[0].legend(fontsize=7.5, ncol=2)
+    model_axes[0].legend(fontsize=7.5, ncol=2)
     fig.suptitle(
         f"カップリングコーム C(f) の個人間分散({len(subjects)}被験者、外耳道プローブ)",
         fontsize=13,

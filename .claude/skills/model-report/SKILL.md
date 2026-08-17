@@ -28,14 +28,16 @@ fig_fr_overlay → fig_local_uniformity → make_report の順に実行する。
 ```bash
 uv run python scripts/robustness/verify_subjects.py        # 検証+形状特徴(data/hutubs の全pp)
 uv run python scripts/robustness/select_subjects.py 8      # 多様パネル選定 → runs/subjects_selected.json
-uv run python scripts/robustness/run_subjects.py           # 3モデル×パネル×4ラン(GPU、~12分/被験者)
+uv run python scripts/robustness/run_subjects.py           # 4モデル×パネル×4ラン(GPU、~16分/被験者)
 uv run python scripts/robustness/run_reseat.py             # 4モデル×4摂動×4ラン(GPU、~1時間)
 uv run python scripts/robustness/fig_subject_comb.py       # C(f)個人間分散+ノッチ衝突判定
 uv run python scripts/robustness/fig_subject_variance.py   # ポスト・ピンナ指標の被験者間σ+仮説検証
 uv run python scripts/robustness/fig_reseat.py             # 再装着感度(df/dmm、指標変動)
+uv run python scripts/robustness/fig_preservation.py       # 個人署名保存(透明基準、P_drv/P_str/P_tot/P_sig_tot)
 ```
 
-- pp1は再実行しない(batch3_*/bare_* を再利用)。他被験者は ms_pp{N}_*、再装着は rs_*
+- pp1は再実行しない(batch3_*/bare_* を再利用)。他被験者は ms_pp{N}_*、再装着は rs_*。
+  透明基準ラン ms_pp{N}_ideal_* (10mmピストン・構造なし・距離20mm共通)はpp1含め run_subjects が生成
 - メッシュは `headphone_sims.geometry.datasets.fetch_hutubs_mesh`(全96番あるわけではない、404多数)
 - 再装着の垂直ズレは `PinnaSpec.offset_y`(ピンナ+外耳道+プローブがy移動、ドライバ固定)
 - 集計JSON: subject_comb_summary / subject_variance_summary / reseat_summary(レポート表の自動反映元)

@@ -49,6 +49,14 @@ def bare_paths(subject: int, model: str) -> tuple[str, str]:
     )
 
 
+def ideal_paths(subject: int) -> tuple[str, str]:
+    """Transparent-reference pair (model-independent mini piston)."""
+    return (
+        f"runs/ms_pp{subject}_ideal_incident.npz",
+        f"runs/ms_pp{subject}_ideal_pinna.npz",
+    )
+
+
 def reseat_paths(model: str, cond: str, structured: bool) -> tuple[str, str]:
     if cond == "base":
         return (
