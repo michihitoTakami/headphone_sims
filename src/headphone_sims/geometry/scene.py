@@ -191,6 +191,10 @@ class PinnaSpec:
     # "protruding") is added within concha_radius of the canal.
     probe_protrusion: float = 2.5e-3
     concha_radius: float = 15e-3
+    # Re-seat misalignment: shifts the placed pinna (and its canal/probes)
+    # along scene +y while the driver stays put, so the driver axis no longer
+    # aims at the canal — models putting the headphone on slightly high/low.
+    offset_y: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -499,8 +503,14 @@ def build_scene(
         # protruding point on the z_pinna plane, so `distance` is the closest
         # driver-to-pinna gap; the recessed canal lies deeper.
         z_tip = float(placed.vertices[:, 2].min())
-        placed.apply_translation([pinna_center[0], pinna_center[1], z_pinna - z_tip])
-        canal_position = (pinna_center[0], pinna_center[1], z_pinna - z_tip)
+        placed.apply_translation(
+            [pinna_center[0], pinna_center[1] + config.pinna.offset_y, z_pinna - z_tip]
+        )
+        canal_position = (
+            pinna_center[0],
+            pinna_center[1] + config.pinna.offset_y,
+            z_pinna - z_tip,
+        )
         pinna_occ = voxelize(placed, grid)
         add_part("pinna", pinna_occ)
         probes = select_pinna_probes(
