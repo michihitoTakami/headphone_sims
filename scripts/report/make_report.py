@@ -194,6 +194,12 @@ def notch_table() -> str:
     keys = [
         ("基準ノッチ数(透明ドライバのピンナのみノッチ)",
          lambda e: f"{e['n_reference_notches']}本", None, None),
+        ("耳介由来コームの深さ 主ノッチ 平均±σ [dB]",
+         lambda e: f"{e['pinna_comb_depth_mean_db']:.1f} ± {e['pinna_comb_depth_std_db']:.1f}",
+         max, lambda e: e["pinna_comb_depth_mean_db"]),
+        ("同・ノッチ深さ合計(≥4dB)平均 [dB]",
+         lambda e: f"{e['pinna_comb_total_mean_db']:.1f}", max,
+         lambda e: e["pinna_comb_total_mean_db"]),
         ("主ノッチ保存率(±1/12oct)",
          lambda e: f"{e['recall']:.2f}", max, lambda e: e["recall"]),
         ("うち6dB超の減衰つき保存 / コームノッチ重なり [本]",
@@ -637,10 +643,14 @@ DXは平均こそ一貫(前節σ0.022)だが署名保存は最下位かつ被験
 <tr><th>ノッチ収支(8被験者)</th><th>Z1R</th><th>LCD</th><th>DX10000CL</th><th>DCA(AMTS)</th></tr>
 {notch_table()}
 </table>
-<p>まず基準ノッチ数そのものに設計差が出る:
-<strong>LCD 12本 > DCA 10本 > Z1R 6本 > DX 5本</strong> —
-平面・大口径の照射はピンナだけで多くのノッチ(=利用可能な個人キュー)を生み、
-小口径球面波(DX)は最少。保存率は<strong>Z1R/LCD 0.67、DX/DCA 0.60</strong>とほぼ横並びで、
+<p>まず<strong>「耳介由来コーム」の生成力そのものに設計差が出る</strong> —
+どのモデルの照射が、耳介だけで深いノッチ構造を作るか:
+主ノッチ深さは<strong>LCD 17.7±6.8 > DCA 12.3±10.9 > Z1R 8.7±5.1 > DX 7.7±7.4 dB</strong>、
+本数も<strong>LCD 12本 > DCA 10本 > Z1R 6本 > DX 5本</strong>。
+大型平面の照射は自由音場の平面波に最も近く、耳介の経路差干渉をフルにコヒーレント励起して
+深く豊かな個人キューの原材料を作る。小口径球面波(DX、9mm)はコンカ中心をほぼ法線入射で
+照らすだけで耳介コームが最も浅い — <strong>キュー生成力: LCD > DCA > Z1R > DX</strong>
+(DCAはσ±10.9と耳による差が最大)。保存率は<strong>Z1R/LCD 0.67、DX/DCA 0.60</strong>とほぼ横並びで、
 どのモデルも<strong>個人の主ノッチの約1/3を失う</strong>(絶対数ではLCDが8/12本と最多の個人キューを届ける)。
 機構の内訳が事前の想定を覆した:
 <strong>消失11本のうち10本は「コームの山による埋没」で、コームノッチとの衝突による消失はゼロ</strong>。

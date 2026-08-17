@@ -104,8 +104,16 @@ def main() -> None:
         lost_peak = lost_notch = lost_other = 0
         shifts, ddepths, per_subj, pairs = [], [], [], []
         n_spur = n_prod = 0
+        ref_deepest, ref_totals = [], []
         for s in subjects:
-            ref_n = notches(grid, tf_db_on(transparent_paths(s, model), grid))
+            tf_ref = tf_db_on(transparent_paths(s, model), grid)
+            ref_n = notches(grid, tf_ref)
+            # pinna-derived comb depth of THIS model's illumination: deepest
+            # reference notch (>=2 dB detection so shallow ears still count)
+            idx_all, pr_all = find_peaks(-tf_ref, prominence=2.0)
+            proms = pr_all["prominences"] if len(idx_all) else np.array([0.0])
+            ref_deepest.append(float(proms.max()))
+            ref_totals.append(float(proms[proms >= PROM_DB].sum()))
             struct_n = notches(grid, tf_db_on(structured_paths(s, model), grid))
             fc, cdb = coupling_db(
                 structured_paths(s, model), bare_paths(s, model)
@@ -144,6 +152,9 @@ def main() -> None:
         pairs_all[model] = pairs
         entry = {
             "n_reference_notches": n_ref,
+            "pinna_comb_depth_mean_db": float(np.mean(ref_deepest)),
+            "pinna_comb_depth_std_db": float(np.std(ref_deepest)),
+            "pinna_comb_total_mean_db": float(np.mean(ref_totals)),
             "recall": kept / max(n_ref, 1),
             "preserved_attenuated": kept_atten,
             "preserved_with_comb_notch": kept_comb_notch,
