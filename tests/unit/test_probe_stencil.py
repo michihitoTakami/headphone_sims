@@ -76,3 +76,16 @@ def test_clearance_measures_distance_to_voxel_centers() -> None:
     clearance = probe_solid_clearance(probes, solid, grid)
     np.testing.assert_allclose(clearance[0], 3.1e-3, atol=1e-6)
     assert np.isinf(clearance[1])  # beyond the 5mm search window
+
+
+def test_domain_sizing_has_no_float_ceil_artifact() -> None:
+    """2*(r_lateral+sponge)/dx that is an exact integer must not gain a cell
+    from float noise — the extra cell put the whole assembly half a cell off
+    the lattice and changed the staircase realization (issue #6)."""
+    from headphone_sims.geometry.scene import DriverSpec, SceneConfig, _domain_grid
+
+    cfg = SceneConfig(driver=DriverSpec(diameter=70e-3))
+    grid, driver_center, _ = _domain_grid(cfg)
+    # r_lateral + sponge = 45+15+15 = 75 mm -> exactly 300 cells across.
+    assert grid.shape[0] == 300
+    assert driver_center[0] / cfg.dx == 150.0

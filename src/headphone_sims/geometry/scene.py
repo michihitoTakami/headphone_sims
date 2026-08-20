@@ -295,8 +295,12 @@ def _domain_grid(config: SceneConfig) -> tuple[Grid, Vec3, float]:
     pinna_depth = 45e-3 if config.pinna.kind == "mesh" else 25e-3
     z_max = z_pinna + pinna_depth + config.axial_margin + sponge
 
-    nx = int(np.ceil(2.0 * (r_lateral + sponge) / config.dx))
-    nz = int(np.ceil(z_max / config.dx))
+    # The 1e-9 guard keeps float noise from bumping an exact cell count up by
+    # one (ceil(300.0000000004) = 301), which would shift the whole assembly
+    # by half a cell against the voxel lattice — a measurable staircase-
+    # realization change (see the issue-#6 boundary/voxel-phase study).
+    nx = int(np.ceil(2.0 * (r_lateral + sponge) / config.dx - 1e-9))
+    nz = int(np.ceil(z_max / config.dx - 1e-9))
     shape = (nx, nx, nz)
     grid = Grid.create(shape, dx=config.dx)
     cx = nx * config.dx / 2.0

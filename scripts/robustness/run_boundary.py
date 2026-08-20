@@ -40,6 +40,18 @@ CONDITIONS = [
     # C-PML at the same 30-cell depth (~-114 dB floor): the arbiter — its
     # C(f) is boundary-clean to far below the comb structure being measured.
     ("cpml", dict(absorber="cpml")),
+    # Voxelization-phase probes at the SAME absorber: a half-cell lateral
+    # lattice shift of the whole assembly isolates staircase-realization
+    # sensitivity (the confound that made the naive sp45/sp60m comparison
+    # blow up for models whose published alignment was half-integer).
+    # Published lattice phases (old ceil-artifact sizing): z1r half-integer
+    # (150.5 cells), dca2 integer (152.0). Under the fixed sizing:
+    # - voxa (margin 15.25 mm): z1r 150.5 = published phase (control);
+    #   dca2 152.5 = flipped (measures dca2's voxel-phase sensitivity).
+    # - voxb (margin 15.0 mm):  z1r 150.0 = flipped (measures z1r's);
+    #   dca2 152.0 = published phase (control).
+    ("voxa", dict(lateral_margin=15.25e-3)),
+    ("voxb", dict()),
 ]
 
 
