@@ -34,6 +34,12 @@ MODELS = [
 CONDITIONS = [
     ("sp45", dict(sponge_thickness=45)),
     ("sp60m", dict(sponge_thickness=60, lateral_margin=22.5e-3, axial_margin=30e-3)),
+    # Same-code control at the production absorber: distinguishes "the code
+    # changed" from "the boundary changed" when comparing against batch3_*.
+    ("sp30re", dict()),
+    # C-PML at the same 30-cell depth (~-114 dB floor): the arbiter — its
+    # C(f) is boundary-clean to far below the comb structure being measured.
+    ("cpml", dict(absorber="cpml")),
 ]
 
 

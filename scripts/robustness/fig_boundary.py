@@ -32,8 +32,14 @@ from common import (
 from headphone_sims.analysis.metrics import compute_metrics
 
 MODELS = {"z1r": ("MDR-Z1R型", "#C05B21"), "dca2": ("DCA型(AMTS実測)", "#7A4B94")}
-CONDS = ["base", "sp45", "sp60m"]
-COND_LABEL = {"base": "基準(30セル)", "sp45": "スポンジ45セル", "sp60m": "60セル+マージン×1.5"}
+CONDS = ["base", "sp30re", "sp45", "sp60m", "cpml"]
+COND_LABEL = {
+    "base": "基準(スポンジ30セル, 公表ラン)",
+    "sp30re": "スポンジ30セル(再現ラン)",
+    "sp45": "スポンジ45セル",
+    "sp60m": "60セル+マージン×1.5",
+    "cpml": "C-PML 30セル(〜-114dB床)",
+}
 TF_BAND = (4000.0, 12500.0)
 
 
@@ -72,7 +78,13 @@ def main() -> None:
         fc0, c0 = coupling_db(paths(model, "base", True), paths(model, "base", False))
         st0 = comb_stats(fc0, c0)
         entry: dict = {"conditions": {}}
-        styles = {"base": ("-", 1.8), "sp45": ("--", 1.2), "sp60m": (":", 1.2)}
+        styles = {
+            "base": ("-", 1.8),
+            "sp30re": ("-", 0.9),
+            "sp45": ("--", 1.2),
+            "sp60m": (":", 1.2),
+            "cpml": ("-.", 1.6),
+        }
         for cond in CONDS:
             f, tf = smoothed_tf_db(paths(model, cond, True))
             tf_i = np.interp(f0, f, tf)
@@ -93,9 +105,21 @@ def main() -> None:
             and abs(e["d_notch_db"]) < 0.5
             and abs(e["notch_shift_oct"]) < 1 / 24
             for cond, e in entry["conditions"].items()
-            if cond != "base"
+            if cond not in ("base", "sp30re")
         )
         entry["passes"] = passing
+        # Agreement with the C-PML arbiter (boundary-clean C(f)) in the core band.
+        if "cpml" in entry["conditions"]:
+            fc_a, c_a = coupling_db(paths(model, "cpml", True), paths(model, "cpml", False))
+            core_a = (fc_a >= 5000.0) & (fc_a <= 10000.0)
+            for cond in CONDS:
+                if cond == "cpml":
+                    continue
+                fc_b, c_b = coupling_db(paths(model, cond, True), paths(model, cond, False))
+                cb_i = np.interp(fc_a[core_a], fc_b, c_b)
+                entry["conditions"][cond]["dC_rms_vs_cpml_db"] = float(
+                    np.sqrt(np.mean((cb_i - c_a[core_a]) ** 2))
+                )
         summary[model] = entry
         ax.axvspan(5, 10, color="#888", alpha=0.08)
         ax.set_xscale("log")
@@ -107,13 +131,15 @@ def main() -> None:
         ax.set_xlabel("周波数 (kHz)")
         ax.set_ylabel("C(f) (dB)")
         ax.set_title(f"{label}: 吸収境界条件によるC(f)の変化", fontsize=11)
-        for cond in ("sp45", "sp60m"):
+        for cond in CONDS:
             e = entry["conditions"][cond]
+            vs_cpml = e.get("dC_rms_vs_cpml_db")
             print(
-                f"{model:5s} {cond:5s} ΔTF_rms {e['dTF_rms_db']:.2f} dB  "
-                f"Δswing {e['d_swing_db']:+.2f} dB  Δnotch {e['d_notch_db']:+.2f} dB  "
-                f"notch shift {e['notch_shift_oct'] * 24:+.2f}/24 oct  "
-                f"core sim {e['metrics']['similarity_mean']:.3f}",
+                f"{model:5s} {cond:6s} ΔTF_rms {e['dTF_rms_db']:5.2f} dB  "
+                f"Δswing {e['d_swing_db']:+6.2f} dB  Δnotch {e['d_notch_db']:+6.2f} dB  "
+                f"swing {e['swing_db']:5.1f} dB  "
+                + (f"ΔC_rms vs CPML {vs_cpml:5.2f} dB  " if vs_cpml is not None else "")
+                + f"core sim {e['metrics']['similarity_mean']:.3f}",
                 flush=True,
             )
         print(f"{model:5s} boundary-independence: {'PASS' if passing else 'FAIL'}")

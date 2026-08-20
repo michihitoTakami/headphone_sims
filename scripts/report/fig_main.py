@@ -12,9 +12,10 @@ plt.rcParams["font.family"] = "Noto Sans CJK HK"
 import numpy as np
 
 from headphone_sims.analysis import signals
-from headphone_sims.analysis.metrics import ApertureSpec, compute_metrics
+from headphone_sims.analysis.metrics import compute_metrics
 from headphone_sims.experiments.config import load_config
 from headphone_sims.fdtd.simulation import SimulationResult
+from headphone_sims.geometry.scene import driver_aperture
 
 C = 343.0
 MODELS = {
@@ -35,12 +36,7 @@ CFGS = {"Z1R": "configs/hutubs_70mm_z1r_v2.yaml",
 def aperture_of(key, driver_center):
     """Near-field metric geometry: the model's radiating footprint."""
     drv = load_config(CFGS[key]).scene.driver
-    tilt = np.deg2rad(drv.tilt_deg)
-    normal = (0.0, float(np.sin(tilt)), float(np.cos(tilt)))
-    center = tuple(float(c) for c in driver_center)
-    if drv.shape == "rect":
-        return ApertureSpec(center=center, normal=normal, width=drv.width, height=drv.height)
-    return ApertureSpec(center=center, normal=normal, radius=drv.diameter / 2.0)
+    return driver_aperture(drv, tuple(float(c) for c in driver_center))
 
 def load_result(path, meta_path=None):
     d = np.load(path)

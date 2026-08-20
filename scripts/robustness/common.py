@@ -60,14 +60,11 @@ def load_result(path: str) -> tuple[SimulationResult, dict]:
 def aperture_for(model: str, driver_center: np.ndarray) -> ApertureSpec:
     """The model's radiating-aperture footprint (near-field metric geometry)."""
     from headphone_sims.experiments.config import load_config
+    from headphone_sims.geometry.scene import driver_aperture
 
     drv = load_config(MODEL_CONFIGS[model]).scene.driver
-    tilt = np.deg2rad(drv.tilt_deg)
-    normal = (0.0, float(np.sin(tilt)), float(np.cos(tilt)))
     center = (float(driver_center[0]), float(driver_center[1]), float(driver_center[2]))
-    if drv.shape == "rect":
-        return ApertureSpec(center=center, normal=normal, width=drv.width, height=drv.height)
-    return ApertureSpec(center=center, normal=normal, radius=drv.diameter / 2.0)
+    return driver_aperture(drv, center)
 
 
 def band_map(

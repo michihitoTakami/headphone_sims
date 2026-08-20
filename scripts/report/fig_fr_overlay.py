@@ -11,11 +11,18 @@ import matplotlib.pyplot as plt
 plt.rcParams["font.family"] = "Noto Sans CJK HK"
 import numpy as np
 
+from headphone_sims.experiments.config import load_config
+from headphone_sims.geometry.scene import driver_aperture
+
 C = 343.0
 MODELS = {"Z1R": ("MDR-Z1R型", "runs/batch3_z1r_incident.npz"),
           "LCD": ("LCD型", "runs/batch3_lcd_incident.npz"),
           "DX": ("DX10000CL型", "runs/batch3_dx_incident.npz"),
           "DCA": ("DCA型(AMTS実測)", "runs/batch3_dca2_incident.npz")}
+CFGS = {"Z1R": "configs/hutubs_70mm_z1r_v2.yaml",
+        "LCD": "configs/hutubs_90mm_planar_v2.yaml",
+        "DX": "configs/hutubs_40mm_dome_v2.yaml",
+        "DCA": "configs/hutubs_dca_amts_real.yaml"}
 
 
 def smooth(freqs, mag, frac=6):
@@ -31,7 +38,8 @@ for col, (key, (label, path)) in enumerate(MODELS.items()):
     d = np.load(path)
     p, dt, pos, dc = d["p"].astype(float), float(d["dt"]), d["positions"], d["driver_center"]
     t = np.arange(p.shape[0]) * dt
-    r = np.linalg.norm(pos - dc, axis=1)
+    ap = driver_aperture(load_config(CFGS[key]).scene.driver, tuple(float(c) for c in dc))
+    r = ap.nearest_distance(pos)  # near-field first-arrival reference
     masks = np.stack([(t >= ri/C - 0.15e-3) & (t <= ri/C + 0.45e-3) for ri in r], axis=1)
     P = np.abs(np.fft.rfft((p * masks), axis=0))
     freqs = np.fft.rfftfreq(p.shape[0], dt)

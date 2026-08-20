@@ -252,6 +252,16 @@ class SceneConfig:
     snapshot_every: int = 0  # 0 = no snapshots
 
 
+def driver_aperture(driver: DriverSpec, center: Vec3) -> ApertureSpec:
+    """The driver's radiating-aperture footprint (near-field metric geometry)."""
+    tilt = np.deg2rad(driver.tilt_deg)
+    normal = (0.0, float(np.sin(tilt)), float(np.cos(tilt)))
+    if driver.shape == "rect":
+        return ApertureSpec(center=center, normal=normal, width=driver.width, height=driver.height)
+    hx, hy = driver.half_extents()
+    return ApertureSpec(center=center, normal=normal, radius=max(hx, hy))
+
+
 @dataclass
 class BuiltScene:
     """Everything needed to run and analyze one scene."""
@@ -788,15 +798,7 @@ def build_scene(
         device=device,
         snapshot=snapshot,
     )
-    if config.driver.shape == "rect":
-        aperture = ApertureSpec(
-            center=driver_center,
-            normal=normal,
-            width=config.driver.width,
-            height=config.driver.height,
-        )
-    else:
-        aperture = ApertureSpec(center=driver_center, normal=normal, radius=r_driver)
+    aperture = driver_aperture(config.driver, driver_center)
     return BuiltScene(
         grid=grid,
         simulation=sim,
