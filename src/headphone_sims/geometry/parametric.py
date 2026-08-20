@@ -60,6 +60,16 @@ class HolePattern:
         face. Default: extrude the 2D pattern through the thickness."""
         return self.open_mask(a, b)
 
+    def bore_mask_3d(
+        self, a: torch.Tensor, b: torch.Tensor, axial_frac: torch.Tensor
+    ) -> torch.Tensor:
+        """Air cells INSIDE the part's bores (holes/tubes/necks) — the region
+        where wall-boundary-layer viscous losses act. For flat plates this is
+        simply the open cells within the slab; patterns whose bounding slab
+        contains free air (e.g. the sloped AMTS top) must override this to
+        exclude it."""
+        return self.open_mask_3d(a, b, axial_frac)
+
 
 @dataclass(frozen=True)
 class HexHoles(HolePattern):
@@ -243,6 +253,16 @@ class AmtsHexCells(HolePattern):
             )
         return above | through_open | closed_open
 
+    def bore_mask_3d(
+        self, a: torch.Tensor, b: torch.Tensor, axial_frac: torch.Tensor
+    ) -> torch.Tensor:
+        # The bounding slab contains free air above the sloped top; bores are
+        # the open cells at or below the local top only.
+        h = (axial_frac + 0.5) * self.max_thickness
+        t = (a / self.slope_length + 0.5).clamp(0.0, 1.0)
+        z_top = self.min_thickness + (self.max_thickness - self.min_thickness) * t
+        return (h <= z_top) & self.open_mask_3d(a, b, axial_frac)
+
 
 @dataclass(frozen=True)
 class RingSlits(HolePattern):
@@ -338,6 +358,37 @@ def plate(
     return occ, porosity
 
 
+def plate_bore(
+    grid: Grid,
+    center: Vec3,
+    normal: Vec3,
+    radius: float,
+    thickness: float,
+    pattern: HolePattern,
+    pattern_angle_deg: float = 0.0,
+) -> torch.Tensor:
+    """Air cells inside the bores of a circular perforated plate — the region
+    where wall viscous losses act. Same placement/bias rules as :func:`plate`."""
+    n, u, w = _local_frame(normal)
+    (sx, sy, sz), gx, gy, gz = _subbox(grid, center, radius + thickness + 2 * grid.dx)
+    dxv, dyv, dzv = gx - center[0], gy - center[1], gz - center[2]
+    axial = dxv * n[0] + dyv * n[1] + dzv * n[2]
+    a = dxv * u[0] + dyv * u[1] + dzv * u[2]
+    b = dxv * w[0] + dyv * w[1] + dzv * w[2]
+    bias = 1e-3 * grid.dx
+    in_disc = (
+        (axial > -thickness / 2.0 + bias)
+        & (axial <= thickness / 2.0 + bias)
+        & (a**2 + b**2 <= radius**2)
+    )
+    ang = math.radians(pattern_angle_deg)
+    pa = a * math.cos(ang) + b * math.sin(ang)
+    pb = -a * math.sin(ang) + b * math.cos(ang)
+    bore = torch.zeros(grid.shape, dtype=torch.bool)
+    bore[sx, sy, sz] = in_disc & pattern.bore_mask_3d(pa, pb, axial / thickness)
+    return bore
+
+
 def rect_plate(
     grid: Grid,
     center: Vec3,
@@ -379,6 +430,40 @@ def rect_plate(
     occ = torch.zeros(grid.shape, dtype=torch.bool)
     occ[sx, sy, sz] = solid_local
     return occ, porosity
+
+
+def rect_plate_bore(
+    grid: Grid,
+    center: Vec3,
+    normal: Vec3,
+    width: float,
+    height: float,
+    thickness: float,
+    pattern: HolePattern,
+    pattern_angle_deg: float = 0.0,
+) -> torch.Tensor:
+    """Air cells inside the bores of a rectangular perforated plate. Same
+    placement/bias rules as :func:`rect_plate`."""
+    n, u, w = _rect_frame(normal)
+    half = max(width, height) / 2.0 + thickness + 2 * grid.dx
+    (sx, sy, sz), gx, gy, gz = _subbox(grid, center, half)
+    dxv, dyv, dzv = gx - center[0], gy - center[1], gz - center[2]
+    axial = dxv * n[0] + dyv * n[1] + dzv * n[2]
+    a = dxv * u[0] + dyv * u[1] + dzv * u[2]
+    b = dxv * w[0] + dyv * w[1] + dzv * w[2]
+    bias = 1e-3 * grid.dx
+    in_rect = (
+        (axial > -thickness / 2.0 + bias)
+        & (axial <= thickness / 2.0 + bias)
+        & (a.abs() <= height / 2.0)
+        & (b.abs() <= width / 2.0)
+    )
+    ang = math.radians(pattern_angle_deg)
+    pa = a * math.cos(ang) + b * math.sin(ang)
+    pb = -a * math.sin(ang) + b * math.cos(ang)
+    bore = torch.zeros(grid.shape, dtype=torch.bool)
+    bore[sx, sy, sz] = in_rect & pattern.bore_mask_3d(pa, pb, axial / thickness)
+    return bore
 
 
 @dataclass(frozen=True)

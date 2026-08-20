@@ -12,7 +12,8 @@ plt.rcParams["font.family"] = "Noto Sans CJK HK"
 import numpy as np
 
 from headphone_sims.analysis import signals
-from headphone_sims.analysis.metrics import compute_metrics
+from headphone_sims.analysis.metrics import ApertureSpec, compute_metrics
+from headphone_sims.experiments.config import load_config
 from headphone_sims.fdtd.simulation import SimulationResult
 
 C = 343.0
@@ -26,26 +27,44 @@ MODELS = {
     "DCA": dict(label="DCA型(AMTS実測)", short="DCA(AMTS)", color="#7A4B94",
                 inc="runs/batch3_dca2_incident.npz", pin="runs/batch3_dca2_pinna.npz"),
 }
+CFGS = {"Z1R": "configs/hutubs_70mm_z1r_v2.yaml",
+        "LCD": "configs/hutubs_90mm_planar_v2.yaml",
+        "DX": "configs/hutubs_40mm_dome_v2.yaml",
+        "DCA": "configs/hutubs_dca_amts_real.yaml"}
+
+def aperture_of(key, driver_center):
+    """Near-field metric geometry: the model's radiating footprint."""
+    drv = load_config(CFGS[key]).scene.driver
+    tilt = np.deg2rad(drv.tilt_deg)
+    normal = (0.0, float(np.sin(tilt)), float(np.cos(tilt)))
+    center = tuple(float(c) for c in driver_center)
+    if drv.shape == "rect":
+        return ApertureSpec(center=center, normal=normal, width=drv.width, height=drv.height)
+    return ApertureSpec(center=center, normal=normal, radius=drv.diameter / 2.0)
 
 def load_result(path, meta_path=None):
     d = np.load(path)
     meta = np.load(meta_path) if meta_path else d
-    res = SimulationResult(dt=float(d["dt"]), dx=0.5e-3, positions=d["positions"],
+    dx = float(d["dx"]) if "dx" in d.files else 0.5e-3  # legacy files: 0.5mm default
+    res = SimulationResult(dt=float(d["dt"]), dx=dx, positions=d["positions"],
                            p=d["p"].astype(float), v=d["v"].astype(float),
                            source_waveform=np.zeros(d["p"].shape[0]))
     return res, meta
 
-metrics_inc, metrics_pin, laterals = {}, {}, {}
+metrics_inc, metrics_pin, laterals, apertures = {}, {}, {}, {}
 metrics_inc_core, metrics_pin_core = {}, {}
 for key, m in MODELS.items():
     res, meta = load_result(m["inc"])
     args = (tuple(meta["driver_center"]), int(meta["reference_index"]))
-    metrics_inc[key] = compute_metrics(res, *args, window_pre=0.15e-3, window_post=0.45e-3)
+    ap = apertures[key] = aperture_of(key, meta["driver_center"])
+    metrics_inc[key] = compute_metrics(res, *args, window_pre=0.15e-3, window_post=0.45e-3,
+                                       aperture=ap)
     metrics_inc_core[key] = compute_metrics(res, *args, window_pre=0.15e-3,
-                                            window_post=0.45e-3, band=(5000.0, 10000.0))
+                                            window_post=0.45e-3, band=(5000.0, 10000.0),
+                                            aperture=ap)
     res_p, _ = load_result(m["pin"], m["inc"])
-    metrics_pin[key] = compute_metrics(res_p, *args)
-    metrics_pin_core[key] = compute_metrics(res_p, *args, band=(5000.0, 10000.0))
+    metrics_pin[key] = compute_metrics(res_p, *args, aperture=ap)
+    metrics_pin_core[key] = compute_metrics(res_p, *args, band=(5000.0, 10000.0), aperture=ap)
     dc = meta["driver_center"]
     laterals[key] = np.linalg.norm(meta["positions"][:, :2] - dc[:2], axis=1) * 1e3
 
@@ -94,7 +113,7 @@ for row, (key, mm) in enumerate(MODELS.items()):
     p, dt, pos, dc = d["p"].astype(float), float(d["dt"]), d["positions"], d["driver_center"]
     p = signals.bandpass_zero_phase(p, dt, 1000.0, 12500.0, axis=0)
     t = np.arange(p.shape[0]) * dt
-    r = np.linalg.norm(pos - dc, axis=1)
+    r = apertures[key].nearest_distance(pos)  # near-field first-arrival reference
     masks = np.stack([(t >= ri/C - 0.15e-3) & (t <= ri/C + 0.45e-3) for ri in r], axis=1)
     p_win = p * masks
     rms = np.sqrt((p_win**2).sum(axis=0))
@@ -141,14 +160,9 @@ fig.suptitle("ピンナ伝達関数 = ピンナ有り / 入射波面(コンカ�
 fig.savefig("runs/final_pinna_tf.png", dpi=115, bbox_inches="tight")
 
 # --- scene geometry views for the 3 models ---
-from headphone_sims.experiments.config import load_config
 from headphone_sims.geometry.scene import build_scene
 from headphone_sims.viz.scene_view import save_scene_views
 
-CFGS = {"Z1R": "configs/hutubs_70mm_z1r_v2.yaml",
-        "LCD": "configs/hutubs_90mm_planar_v2.yaml",
-        "DX": "configs/hutubs_40mm_dome_v2.yaml",
-        "DCA": "configs/hutubs_dca_amts_real.yaml"}
 for key, cfg_path in CFGS.items():
     cfg = load_config(cfg_path).scene
     built = build_scene(cfg, device="cpu")

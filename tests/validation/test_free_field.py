@@ -52,6 +52,35 @@ def test_monopole_amplitude_and_delay() -> None:
 
 
 @pytest.mark.slow
+def test_cpml_reflection_below_minus_60db() -> None:
+    """C-PML at half the sponge thickness must beat the sponge's -40 dB floor
+    by a wide margin (measured ~-114 dB at 15 cells on this setup)."""
+    from headphone_sims.fdtd.boundaries import CpmlConfig
+
+    n = 120
+    dx = 2e-3
+    grid = Grid.create((n, n, n), dx=dx)
+    n_steps = 700
+    wf = ricker(grid.dt, n_steps, peak_frequency=8000.0)
+    center = ((n / 2) * dx, (n / 2) * dx, (n / 2) * dx)
+    probe = np.array([[center[0] + 20e-3, center[1], center[2]]])
+    sim = Simulation(
+        grid=grid,
+        sources=[PointSource(position=center, waveform=wf)],
+        receivers=ReceiverArray(probe),
+        n_steps=n_steps,
+        sponge=None,
+        cpml=CpmlConfig(thickness=15),
+        device=_device(),
+    )
+    res = sim.run()
+    t = res.times
+    direct = float(np.abs(res.p[t < 0.45e-3, 0]).max())
+    late = float(np.abs(res.p[t > 0.7e-3, 0]).max())
+    assert 20.0 * np.log10(late / direct) < -60.0
+
+
+@pytest.mark.slow
 def test_sponge_reflection_below_minus_40db() -> None:
     n = 120
     dx = 2e-3

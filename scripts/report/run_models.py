@@ -44,7 +44,7 @@ for key, cfg_path in STRUCTURED:
         res = built.simulation.run()
         np.savez_compressed(
             out, p=res.p.astype(np.float32), v=res.v.astype(np.float32),
-            positions=res.positions, dt=res.dt,
+            positions=res.positions, dt=res.dt, dx=res.dx,
             driver_center=np.asarray(built.driver_center),
             canal=np.asarray(built.canal_position),
             reference_index=built.reference_index,
@@ -63,6 +63,7 @@ for key, cfg_path in BARE:
         res = built.simulation.run()
         np.savez_compressed(
             out, p=res.p.astype(np.float32), positions=res.positions, dt=res.dt,
+            dx=res.dx,
             driver_center=np.asarray(built.driver_center),
             reference_index=built.reference_index,
         )

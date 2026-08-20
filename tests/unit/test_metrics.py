@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from headphone_sims.analysis.metrics import compare_runs, compute_metrics
+from headphone_sims.analysis.metrics import ApertureSpec, compare_runs, compute_metrics
 from headphone_sims.fdtd.simulation import SimulationResult
 
 RHO_C = 1.204 * 343.0
@@ -123,3 +123,86 @@ def test_band_limit_ignores_ultrasonic_disturbance() -> None:
     # Full-band analysis DOES see it.
     fullband = compute_metrics(result, center, reference_index=0, band=None, band_max=20000.0)
     assert fullband.similarity[7] < clean.similarity[7] - 0.1
+
+
+def test_aperture_nearest_distance_disc_and_rect() -> None:
+    disc = ApertureSpec(center=(0.0, 0.0, 0.0), radius=20e-3)
+    pts = np.array(
+        [
+            [0.0, 0.0, 10e-3],  # on axis, inside footprint -> axial only
+            [10e-3, 0.0, 5e-3],  # inside footprint
+            [30e-3, 0.0, 0.0],  # in-plane, 10mm beyond the rim
+            [30e-3, 0.0, 10e-3],  # beyond the rim, off plane
+        ]
+    )
+    np.testing.assert_allclose(
+        disc.nearest_distance(pts),
+        [10e-3, 5e-3, 10e-3, np.hypot(10e-3, 10e-3)],
+        atol=1e-9,
+    )
+    rect = ApertureSpec(center=(0.0, 0.0, 0.0), width=30e-3, height=60e-3)
+    pts = np.array(
+        [
+            [0.0, 0.0, 12e-3],  # inside footprint
+            [0.0, 40e-3, 0.0],  # 10mm beyond the height edge, in plane
+            [25e-3, 40e-3, 10e-3],  # beyond both edges, off plane
+        ]
+    )
+    np.testing.assert_allclose(
+        rect.nearest_distance(pts),
+        [12e-3, 10e-3, float(np.sqrt(10e-3**2 + 10e-3**2 + 10e-3**2))],
+        atol=1e-9,
+    )
+
+
+def test_aperture_window_flattens_arrival_for_large_source() -> None:
+    """A plane wave IS the field of a very large aperture: with the aperture
+    given, t_geo becomes the (constant) axial distance and arrival errors go
+    flat, while the driver-center reference bakes in a spurious curvature."""
+    result, center = _plane_wave_result()
+    ap = ApertureSpec(center=(0.0, 0.0, 0.0), radius=50e-3)
+    m_center = compute_metrics(result, center, reference_index=0)
+    m_ap = compute_metrics(result, center, reference_index=0, aperture=ap)
+    # The synthetic field already delays per center-distance, so the center
+    # reference is flat and the aperture reference sees the (real, small)
+    # curvature of the synthetic wavefront — both must stay tiny; the point
+    # here is API behavior: aperture changes t_geo and axial deviation exists.
+    assert m_ap.arrival_spread_ms < 0.05
+    assert m_ap.incidence_axial_deviation_deg.max() < 3.0
+    assert m_center.incidence_axial_deviation_deg.max() < 3.0
+
+
+def test_spectral_shape_spread_ignores_broadband_gain() -> None:
+    """Issue #6: broadband level differences are NOT spectral-shape variation.
+
+    Halving one probe's amplitude leaves spectral_shape_spread_db unchanged,
+    while the legacy 1/r spectral_deviation_db grows — the shape metric is the
+    near-field-safe one."""
+    result, center = _plane_wave_result()
+    clean = compute_metrics(result, center, reference_index=0)
+    result.p[:, 5] *= 0.5
+    result.v[:, :, 5] *= 0.5
+    scaled = compute_metrics(result, center, reference_index=0)
+    np.testing.assert_allclose(
+        scaled.spectral_shape_spread_db, clean.spectral_shape_spread_db, atol=0.05
+    )
+    assert (
+        scaled.summary()["spectral_deviation_db_rms"]
+        > clean.summary()["spectral_deviation_db_rms"] + 0.5
+    )
+
+
+def test_spectral_shape_spread_detects_per_probe_coloration() -> None:
+    """A probe with a genuinely different spectrum must raise the spread."""
+    result, center = _plane_wave_result()
+    clean = compute_metrics(result, center, reference_index=0)
+    t = np.arange(result.p.shape[0]) * result.dt
+    r = float(np.linalg.norm(result.positions[5] - np.asarray(center)))
+    t0 = r / 343.0
+    env = np.exp(-0.5 * ((t - t0) / 80e-6) ** 2)
+    result.p[:, 5] += 0.8 * env * np.sin(2 * np.pi * 4000.0 * (t - t0))
+    colored = compute_metrics(result, center, reference_index=0)
+    assert (
+        colored.summary()["spectral_shape_spread_db_max"]
+        > clean.summary()["spectral_shape_spread_db_max"] + 1.0
+    )

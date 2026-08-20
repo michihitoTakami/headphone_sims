@@ -1,9 +1,11 @@
 """Excitation waveforms and source geometries.
 
-Sources are "soft" (additive): they add to the field rather than overwrite it,
-so scattered waves pass through the source region. Each source is *baked* onto
-a specific grid/device into flat index/weight tensors for fast per-step
-injection.
+Piston/rigid-body sources are "hard" by default (Dirichlet: they overwrite the
+masked face velocities — the correct model for a diaphragm set into a rigid
+wall, reverting to a rigid scatterer after the waveform). PointSource and
+ApertureMonopoleSource are "soft" (additive), so scattered waves pass through
+their region. Each source is *baked* onto a specific grid/device into flat
+index/weight tensors for fast per-step injection.
 """
 
 from __future__ import annotations
@@ -382,9 +384,7 @@ class ApertureMonopoleSource:
             raise ValueError("aperture normal must be non-zero")
         n = n / norm
         c = torch.tensor(self.center, dtype=torch.float64)
-        coords = [
-            (torch.arange(s, dtype=torch.float64) + 0.5) * grid.dx for s in grid.shape
-        ]
+        coords = [(torch.arange(s, dtype=torch.float64) + 0.5) * grid.dx for s in grid.shape]
         gx, gy, gz = torch.meshgrid(coords[0], coords[1], coords[2], indexing="ij")
         dxv, dyv, dzv = gx - c[0], gy - c[1], gz - c[2]
         axial = dxv * n[0] + dyv * n[1] + dzv * n[2]
@@ -422,9 +422,5 @@ class ApertureMonopoleSource:
 
 
 Source = (
-    PointSource
-    | PistonSource
-    | RectangularPistonSource
-    | RigidBodySource
-    | ApertureMonopoleSource
+    PointSource | PistonSource | RectangularPistonSource | RigidBodySource | ApertureMonopoleSource
 )

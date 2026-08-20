@@ -13,10 +13,14 @@ multiplicative damping tensors applied once per step.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import torch
 
 from headphone_sims.grid import Grid
+
+if TYPE_CHECKING:
+    from headphone_sims.fdtd.boundaries import CpmlState
 
 
 @dataclass
@@ -25,7 +29,9 @@ class FdtdState:
 
     ``mult_v*`` combine the solid face masks with velocity damping
     (``mask * exp(-sigma*dt)``); ``damp_p`` is the pressure damping. Any of
-    them may be ``None`` when there is nothing to mask or damp.
+    them may be ``None`` when there is nothing to mask or damp. ``cpml``
+    holds the convolutional-PML memory variables when that absorber is used
+    instead of the sponge.
     """
 
     grid: Grid
@@ -37,6 +43,7 @@ class FdtdState:
     mult_vy: torch.Tensor | None = None
     mult_vz: torch.Tensor | None = None
     damp_p: torch.Tensor | None = None
+    cpml: CpmlState | None = None
 
     @classmethod
     def zeros(
@@ -74,6 +81,9 @@ def step_velocity(state: FdtdState) -> None:
     vy.sub_(p[:, 1:, :] - p[:, :-1, :], alpha=cv)
     vz.sub_(p[:, :, 1:] - p[:, :, :-1], alpha=cv)
 
+    if state.cpml is not None:
+        state.cpml.apply_velocity(state, cv)
+
     if state.mult_vx is not None:
         vx.mul_(state.mult_vx)
     if state.mult_vy is not None:
@@ -97,6 +107,9 @@ def step_pressure(state: FdtdState) -> None:
     p[:, 1:, :].add_(vy, alpha=cp)
     p[:, :, :-1].sub_(vz, alpha=cp)
     p[:, :, 1:].add_(vz, alpha=cp)
+
+    if state.cpml is not None:
+        state.cpml.apply_pressure(state, cp)
 
     if state.damp_p is not None:
         p.mul_(state.damp_p)

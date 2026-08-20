@@ -19,7 +19,90 @@ from __future__ import annotations
 import numpy as np
 from scipy.signal import find_peaks
 
+from headphone_sims.analysis import signals
+from headphone_sims.analysis.metrics import ApertureSpec
+from headphone_sims.fdtd.simulation import SimulationResult
+
 SPATIAL_CORE = (5000.0, 10000.0)
+C_SOUND = 343.0
+
+MODEL_CONFIGS = {
+    "z1r": "configs/hutubs_70mm_z1r_v2.yaml",
+    "lcd": "configs/hutubs_90mm_planar_v2.yaml",
+    "dx": "configs/hutubs_40mm_dome_v2.yaml",
+    "dca": "configs/hutubs_dca_amts.yaml",
+    "dca2": "configs/hutubs_dca_amts_real.yaml",
+}
+
+
+def load_result(path: str) -> tuple[SimulationResult, dict]:
+    """SimulationResult rebuilt from a batch .npz plus the raw arrays.
+
+    dx comes from the file when present; legacy files (recorded before dx was
+    saved) were all produced at the 0.5 mm default. Runs saved without v get
+    zeros (pressure-only metrics stay valid; intensity metrics do not).
+    """
+    d = np.load(path)
+    dx = float(d["dx"]) if "dx" in d.files else 0.5e-3
+    p = d["p"].astype(float)
+    v = d["v"].astype(float) if "v" in d.files else np.zeros((3, *p.shape))
+    res = SimulationResult(
+        dt=float(d["dt"]),
+        dx=dx,
+        positions=d["positions"],
+        p=p,
+        v=v,
+        source_waveform=np.zeros(p.shape[0]),
+    )
+    return res, d
+
+
+def aperture_for(model: str, driver_center: np.ndarray) -> ApertureSpec:
+    """The model's radiating-aperture footprint (near-field metric geometry)."""
+    from headphone_sims.experiments.config import load_config
+
+    drv = load_config(MODEL_CONFIGS[model]).scene.driver
+    tilt = np.deg2rad(drv.tilt_deg)
+    normal = (0.0, float(np.sin(tilt)), float(np.cos(tilt)))
+    center = (float(driver_center[0]), float(driver_center[1]), float(driver_center[2]))
+    if drv.shape == "rect":
+        return ApertureSpec(center=center, normal=normal, width=drv.width, height=drv.height)
+    return ApertureSpec(center=center, normal=normal, radius=drv.diameter / 2.0)
+
+
+def band_map(
+    inc_path: str, f_want: float, model: str | None = None
+) -> tuple[np.ndarray, np.ndarray]:
+    """(canal-relative xy, band level dB re mean) on an incident run.
+
+    The direct window uses the nearest-aperture-point distance when the
+    ``model`` key is given (near-field correct), else the driver-center ray.
+    """
+    d = np.load(inc_path)
+    p, dt = d["p"].astype(float), float(d["dt"])
+    pos, dc, canal = d["positions"], d["driver_center"], d["canal"]
+    p = signals.bandpass_zero_phase(p, dt, 1000.0, 12500.0, axis=0)
+    t = np.arange(p.shape[0]) * dt
+    if model is not None:
+        r = aperture_for(model, dc).nearest_distance(pos)
+    else:
+        r = np.linalg.norm(pos - dc, axis=1)
+    masks = np.stack(
+        [(t >= ri / C_SOUND - 0.15e-3) & (t <= ri / C_SOUND + 0.45e-3) for ri in r], axis=1
+    )
+    centers = signals.third_octave_centers(1000, 12500)
+    i = int(np.argmin(np.abs(centers - f_want)))
+    mags = signals.band_magnitudes(p * masks, dt, centers[i : i + 1], axis=0)[0]
+    lvl = 20 * np.log10(mags / mags.mean())
+    return pos[:, :2] - canal[:2], lvl
+
+
+def map_corr(a_xy, a_lvl, b_xy, b_lvl) -> float:
+    """Correlation of two probe maps, nearest-neighbor matched (<=1.5mm)."""
+    d = np.linalg.norm(a_xy[:, None, :] - b_xy[None, :, :], axis=2)
+    j = d.argmin(axis=1)
+    ok = d[np.arange(len(a_xy)), j] < 1.5e-3
+    return float(np.corrcoef(a_lvl[ok], b_lvl[j[ok]])[0, 1])
 
 
 def smooth(freqs, mag, frac=24):

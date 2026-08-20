@@ -77,6 +77,9 @@ def test_transparent_scene_contains_only_the_pinna(tmp_path: Path) -> None:
         pinna=PinnaSpec(kind="mesh", mesh_path=_synthetic_head(tmp_path), side="left"),
         record_ms=0.1,
         n_probes=100,
+        # The velocity-stencil air check needs ~1.5*dx clearance; at this
+        # coarse test dx the production default offset (1.5 mm) sits inside it.
+        probe_offset=2.5e-3,
     )
     built = build_scene(cfg, device="cpu")
     assert [name for name, _ in built.parts] == ["pinna"]

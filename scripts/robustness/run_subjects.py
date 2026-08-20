@@ -54,6 +54,7 @@ def run_one(scene_cfg, out: str, incident: bool, save_v: bool) -> None:
         p=res.p.astype(np.float32),
         positions=res.positions,
         dt=res.dt,
+        dx=res.dx,
         driver_center=np.asarray(built.driver_center),
         canal=np.asarray(built.canal_position),
         reference_index=built.reference_index,
