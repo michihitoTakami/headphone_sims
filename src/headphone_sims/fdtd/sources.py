@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from typing import Literal
 
 import torch
 
@@ -347,4 +348,83 @@ class RigidBodySource:
         return baked.to(device)
 
 
-Source = PointSource | PistonSource | RectangularPistonSource | RigidBodySource
+@dataclass(frozen=True)
+class ApertureMonopoleSource:
+    """Transparent driver: additive monopole sheet over the aperture footprint.
+
+    A monopole sheet is the Rayleigh-integral idealization of a baffled
+    piston's forward radiation, but injects additively into pressure, so the
+    field passes through the source plane unscattered — the "transparent
+    driver" reference for preservation studies (the model's aperture shapes
+    the outgoing wavefront; a pinna reflection returns through it freely).
+    A mirror lobe radiates backward; in a solid-free reference scene it exits
+    into the sponge and never returns.
+
+    ``shape="disc"`` uses ``radius`` with an optional cos^2 roll-off from
+    ``taper_start`` to the rim (the flexing-surround velocity profile mapped
+    onto the plane); ``shape="rect"`` uses width x height, uniform (height
+    runs along the projection of scene +y, as in RectangularPistonSource).
+    """
+
+    center: Vec3
+    normal: Vec3
+    waveform: torch.Tensor
+    shape: Literal["disc", "rect"] = "disc"
+    radius: float = 20e-3
+    taper_start: float | None = None
+    width: float = 65e-3
+    height: float = 90e-3
+
+    def bake(self, grid: Grid, device: torch.device) -> BakedSource:
+        n = torch.tensor(self.normal, dtype=torch.float64)
+        norm = float(torch.linalg.vector_norm(n))
+        if norm == 0.0:
+            raise ValueError("aperture normal must be non-zero")
+        n = n / norm
+        c = torch.tensor(self.center, dtype=torch.float64)
+        coords = [
+            (torch.arange(s, dtype=torch.float64) + 0.5) * grid.dx for s in grid.shape
+        ]
+        gx, gy, gz = torch.meshgrid(coords[0], coords[1], coords[2], indexing="ij")
+        dxv, dyv, dzv = gx - c[0], gy - c[1], gz - c[2]
+        axial = dxv * n[0] + dyv * n[1] + dzv * n[2]
+        # Half-open one-cell band with a tiny shift: when the plane falls
+        # exactly between two cell layers, exactly one layer is selected
+        # (a symmetric |axial| <= dx/2 test picks both, doubling the sheet).
+        eps = 1e-6 * grid.dx
+        on_plane = (axial > -0.5 * grid.dx + eps) & (axial <= 0.5 * grid.dx + eps)
+        if self.shape == "rect":
+            helper = torch.tensor([0.0, 1.0, 0.0], dtype=torch.float64)
+            if abs(float(n[1])) > 0.9:
+                helper = torch.tensor([1.0, 0.0, 0.0], dtype=torch.float64)
+            u = helper - n * float(torch.dot(helper, n))
+            u = u / torch.linalg.vector_norm(u)
+            w_ax = torch.linalg.cross(n, u)
+            a = dxv * u[0] + dyv * u[1] + dzv * u[2]
+            b = dxv * w_ax[0] + dyv * w_ax[1] + dzv * w_ax[2]
+            inside = on_plane & (a.abs() <= self.height / 2.0) & (b.abs() <= self.width / 2.0)
+            amp = torch.ones_like(axial)
+        else:
+            radial = torch.sqrt((dxv**2 + dyv**2 + dzv**2 - axial**2).clamp(min=0.0))
+            inside = on_plane & (radial <= self.radius)
+            if self.taper_start is not None:
+                span = max(self.radius - self.taper_start, grid.dx)
+                t = ((radial - self.taper_start) / span).clamp(0.0, 1.0)
+                amp = torch.cos(torch.pi / 2.0 * t) ** 2
+            else:
+                amp = torch.ones_like(axial)
+        flat = inside.reshape(-1).nonzero(as_tuple=False).squeeze(1)
+        if not flat.numel():
+            raise ValueError("aperture does not intersect any pressure cell on this grid")
+        weights = amp.reshape(-1)[flat].to(torch.float32)
+        baked = BakedSource(waveform=self.waveform, p_idx=flat, p_weight=weights)
+        return baked.to(device)
+
+
+Source = (
+    PointSource
+    | PistonSource
+    | RectangularPistonSource
+    | RigidBodySource
+    | ApertureMonopoleSource
+)

@@ -19,6 +19,7 @@ from headphone_sims.fdtd.boundaries import SpongeConfig
 from headphone_sims.fdtd.receivers import ReceiverArray
 from headphone_sims.fdtd.simulation import Simulation, SnapshotConfig
 from headphone_sims.fdtd.sources import (
+    ApertureMonopoleSource,
     PistonSource,
     RectangularPistonSource,
     RigidBodySource,
@@ -191,6 +192,10 @@ class PinnaSpec:
     # "protruding") is added within concha_radius of the canal.
     probe_protrusion: float = 2.5e-3
     concha_radius: float = 15e-3
+    # Re-seat misalignment: shifts the placed pinna (and its canal/probes)
+    # along scene +y while the driver stays put, so the driver axis no longer
+    # aims at the canal — models putting the headphone on slightly high/low.
+    offset_y: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -210,6 +215,12 @@ class SceneConfig:
     # bare sealing wall). True raises the baffle around each sealed filter up
     # to the filter's front plane ("housing" part).
     housing_flange: bool = True
+    # Transparent-driver reference: replace the driver with an additive
+    # monopole sheet over the same aperture (same footprint, taper, and
+    # position) that scatters nothing — the model's outgoing wavefront with
+    # no driver body, no baffle, no structure. Requires filters=() and
+    # baffle=False; used as the counterfactual for preservation studies.
+    transparent_driver: bool = False
     sponge_thickness: int = 30
     n_probes: int = 400
     probe_offset: float = 1.5e-3
@@ -307,8 +318,13 @@ def build_scene(
     # the velocity source (built at the end, once `solid` is final). Register
     # it before the baffle so the viewer's first-id-wins face ownership colors
     # the base/baffle overlap as driver.
+    if config.transparent_driver and (config.filters or config.baffle):
+        raise ValueError(
+            "transparent_driver=True requires filters=() and baffle=False — the "
+            "reference scene must contain nothing but the pinna"
+        )
     dome_occ: torch.Tensor | None = None
-    if config.driver.shape == "dome":
+    if config.driver.shape == "dome" and not config.transparent_driver:
         dome_profile = parametric.DomeProfile(
             radius=r_driver,
             dome_fraction=config.driver.dome_fraction,
@@ -499,8 +515,14 @@ def build_scene(
         # protruding point on the z_pinna plane, so `distance` is the closest
         # driver-to-pinna gap; the recessed canal lies deeper.
         z_tip = float(placed.vertices[:, 2].min())
-        placed.apply_translation([pinna_center[0], pinna_center[1], z_pinna - z_tip])
-        canal_position = (pinna_center[0], pinna_center[1], z_pinna - z_tip)
+        placed.apply_translation(
+            [pinna_center[0], pinna_center[1] + config.pinna.offset_y, z_pinna - z_tip]
+        )
+        canal_position = (
+            pinna_center[0],
+            pinna_center[1] + config.pinna.offset_y,
+            z_pinna - z_tip,
+        )
         pinna_occ = voxelize(placed, grid)
         add_part("pinna", pinna_occ)
         probes = select_pinna_probes(
@@ -568,7 +590,38 @@ def build_scene(
             if name != "pinna":
                 sim_solid |= occ_part
     sources: list[Source]
-    if config.driver.shape == "dome":
+    if config.transparent_driver:
+        if config.driver.shape == "rect":
+            sources = [
+                ApertureMonopoleSource(
+                    center=driver_center,
+                    normal=normal,
+                    waveform=waveform,
+                    shape="rect",
+                    width=config.driver.width,
+                    height=config.driver.height,
+                )
+            ]
+        else:
+            # dome/disc: planar aperture with the model's radial drive taper
+            # (same taper_start rule as the tapered rigid-body drive below).
+            taper_start: float | None = None
+            if config.driver.shape == "dome":
+                if config.driver.taper_width is not None:
+                    taper_start = r_driver - max(config.driver.taper_width, grid.dx)
+                else:
+                    taper_start = config.driver.dome_fraction * r_driver
+            sources = [
+                ApertureMonopoleSource(
+                    center=driver_center,
+                    normal=normal,
+                    waveform=waveform,
+                    shape="disc",
+                    radius=r_driver,
+                    taper_start=taper_start,
+                )
+            ]
+    elif config.driver.shape == "dome":
         assert dome_occ is not None
         drive_occ: torch.Tensor | None = None
         amp_field: torch.Tensor | None = None

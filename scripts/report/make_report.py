@@ -5,6 +5,14 @@ import json
 from pathlib import Path
 
 summary = json.load(open("runs/final_summary.json"))
+# Robustness study (issue #3): multi-subject comb variance + re-seat sensitivity
+comb = json.load(open("runs/subject_comb_summary.json"))
+variance = json.load(open("runs/subject_variance_summary.json"))
+reseat = json.load(open("runs/reseat_summary.json"))
+preservation = json.load(open("runs/preservation_summary.json"))
+notchp = json.load(open("runs/notch_preservation_summary.json"))
+verify = {r["subject"]: r for r in json.load(open("runs/subjects_verify.json"))["results"]}
+PANEL = variance["subjects"]
 
 
 def b64(path: str) -> str:
@@ -24,6 +32,12 @@ imgs = {k: b64(p) for k, p in {
     "geo_lcd": "runs/final_geo_LCD.png",
     "geo_dx": "runs/final_geo_DX.png",
     "geo_dca": "runs/final_geo_DCA.png",
+    "subjects": "runs/subjects_probe_layouts.png",
+    "subj_comb": "runs/subject_comb.png",
+    "subj_var": "runs/subject_variance.png",
+    "preservation": "runs/preservation.png",
+    "notch_pres": "runs/notch_preservation.png",
+    "reseat": "runs/reseat.png",
 }.items()}
 
 ORDER = ["Z1R", "LCD", "DX", "DCA"]
@@ -53,6 +67,182 @@ def table(phase: str) -> str:
             f"<td class='num{' good' if k == best else ''}'>{fmt(summary[phase][k])}</td>"
             for k in ORDER
         )
+        rows.append(f"<tr><td>{label}</td>{cells}</tr>")
+    return "\n".join(rows)
+
+
+ROBUST4 = ["z1r", "lcd", "dx", "dca2"]  # 4 models: multi-subject + re-seat studies
+
+
+def comb_table() -> str:
+    """Per-model inter-subject comb stats (auto from subject_comb_summary)."""
+    rows = []
+    def swings(m):
+        return [r["swing_db"] for r in comb[m]["per_subject"]]
+    cells = {
+        "コーム振れ幅 平均±σ [dB]": (
+            lambda m: f"{comb[m]['swing_mean_db']:.1f} ± {comb[m]['swing_std_db']:.1f}",
+            min, lambda m: comb[m]["swing_mean_db"]),
+        "同・被験者レンジ [dB]": (
+            lambda m: f"{min(swings(m)):.1f} 〜 {max(swings(m)):.1f}", None, None),
+        "最深ノッチ周波数のレンジ [kHz]": (
+            lambda m: f"{comb[m]['notch_hz_min']/1e3:.1f} 〜 {comb[m]['notch_hz_max']/1e3:.1f}",
+            None, None),
+        "最深ノッチ深さ 平均 [dB]": (
+            lambda m: f"{comb[m]['notch_depth_mean_db']:.1f}",
+            max, lambda m: comb[m]["notch_depth_mean_db"]),
+        "ピンナノッチ衝突 / HWノッチ総数": (
+            lambda m: f"{comb[m]['collisions_total']} / "
+                      f"{comb[m]['collisions_total'] + comb[m]['false_cues_total']}",
+            None, None),
+    }
+    for label, (fmt, agg, keyf) in cells.items():
+        best = agg(ROBUST4, key=keyf) if agg else None
+        rows.append("<tr><td>" + label + "</td>" + "".join(
+            f"<td class='num{' good' if m == best else ''}'>{fmt(m)}</td>" for m in ROBUST4
+        ) + "</tr>")
+    return "\n".join(rows)
+
+
+def variance_table() -> str:
+    """Per-model inter-subject spread of core post-pinna metrics."""
+    keys = [
+        ("波形一致・核心帯 平均±σ", "similarity_mean", 1.0, "{:.3f}", max),
+        ("レベルばらつき σ [dB] 平均±σ", "level_spread_db", 1.0, "{:.2f}", min),
+        ("到達時間ばらつき [µs] 平均±σ", "arrival_spread_ms", 1e3, "{:.0f}", min),
+        ("入射角ばらつき [°] 平均±σ", "incidence_spread_deg", 1.0, "{:.1f}", min),
+    ]
+    rows = []
+    for label, key, scale, fmt, agg in keys:
+        def val(m, stat, key=key, scale=scale):
+            return variance["models"][m]["core"][key][stat] * scale
+        best = agg(ROBUST4, key=lambda m: val(m, "mean"))
+        best_std = min(ROBUST4, key=lambda m: val(m, "std"))
+        cells = []
+        for m in ROBUST4:
+            mean_s = fmt.format(val(m, "mean"))
+            std_s = fmt.format(val(m, "std"))
+            cls = " good" if m == best else ""
+            std_html = f"<strong>{std_s}</strong>" if m == best_std else std_s
+            cells.append(f"<td class='num{cls}'>{mean_s} ± {std_html}</td>")
+        rows.append(f"<tr><td>{label}</td>{''.join(cells)}</tr>")
+    return "\n".join(rows)
+
+
+def reseat_table() -> str:
+    keys = [
+        ("コーム平行移動 軸方向 [Hz/mm]", lambda e: f"{e['axial_shift_hz_per_mm']:+.0f}", min,
+         lambda e: abs(e["axial_shift_hz_per_mm"])),
+        ("コーム平行移動 上下方向 [Hz/mm]", lambda e: f"{e['vertical_shift_hz_per_mm']:+.0f}", min,
+         lambda e: abs(e["vertical_shift_hz_per_mm"])),
+        ("コーム変化 ΔC RMS 最大 [dB]", lambda e: f"{e['dC_rms_db_max']:.1f}", min,
+         lambda e: e["dC_rms_db_max"]),
+        ("核心帯 波形一致の変動幅", lambda e: f"{e['similarity_range']:.3f}", min,
+         lambda e: e["similarity_range"]),
+        ("10kHz照射マップ相関(上下±2mm 最小)", lambda e: f"{min(e['conditions'][c]['map10k_corr'] for c in ('vym2', 'vyp2')):.2f}", max,
+         lambda e: min(e["conditions"][c]["map10k_corr"] for c in ("vym2", "vyp2"))),
+    ]
+    rows = []
+    for label, fmt, agg, keyf in keys:
+        best = agg(ROBUST4, key=lambda m: keyf(reseat[m]))
+        rows.append("<tr><td>" + label + "</td>" + "".join(
+            f"<td class='num{' good' if m == best else ''}'>{fmt(reseat[m])}</td>"
+            for m in ROBUST4
+        ) + "</tr>")
+    return "\n".join(rows)
+
+
+def ear_ranking_table() -> str:
+    """Per-ear comb-depth ranking (mean swing across the 4 models)."""
+    rows = ["<tr><th>耳</th><th>コーム振れ幅 平均 [dB]</th><th>最悪モデル時 [dB]</th>"
+            "<th>最深ノッチ [dB]</th><th>固有主ノッチ [dB]</th><th>コンカ深さ [mm]</th></tr>"]
+    for r in comb["ear_ranking"]["ranking"]:
+        rows.append(
+            f"<tr><td>pp{r['subject']}</td>"
+            f"<td class='num'>{r['swing_mean_db']:.1f}</td>"
+            f"<td class='num'>{r['swing_max_db']:.1f}</td>"
+            f"<td class='num'>{r['notch_min_db']:.1f}</td>"
+            f"<td class='num'>{r['own_notch_db']:.1f}</td>"
+            f"<td class='num'>{r['concha_depth_mm']:.1f}</td></tr>"
+        )
+    return "\n".join(rows)
+
+
+def preservation_table() -> str:
+    """Per-model preservation decomposition vs the transparent-driver reference."""
+    keys = [
+        ("ドライバ実体のみ P_body = corr(裸, 透明)", "pinna", "P_body"),
+        ("構造のみ P_str = corr(構造あり, 裸)", "pinna", "P_str"),
+        ("製品全体 P_tot = corr(構造あり, 透明)", "pinna", "P_tot"),
+        ("個人署名の保存 P_sig_tot(4〜12.5kHz)", "pinna", "P_sig_tot"),
+        ("個人署名の保存 P_sig_tot(核心帯 5〜10kHz)", "core", "P_sig_tot"),
+    ]
+    rows = []
+    for label, band, key in keys:
+        def val(m, stat, band=band, key=key):
+            return preservation["models"][m][band][key][stat]
+        best = max(ROBUST4, key=lambda m: val(m, "mean"))
+        rows.append("<tr><td>" + label + "</td>" + "".join(
+            f"<td class='num{' good' if m == best else ''}'>"
+            f"{val(m, 'mean'):.3f} ± {val(m, 'std'):.3f}</td>"
+            for m in ROBUST4
+        ) + "</tr>")
+    return "\n".join(rows)
+
+
+def notch_table() -> str:
+    keys = [
+        ("基準ノッチ数(透明ドライバのピンナのみノッチ)",
+         lambda e: f"{e['n_reference_notches']}本", None, None),
+        ("耳介由来コームの深さ 主ノッチ 平均±σ [dB]",
+         lambda e: f"{e['pinna_comb_depth_mean_db']:.1f} ± {e['pinna_comb_depth_std_db']:.1f}",
+         max, lambda e: e["pinna_comb_depth_mean_db"]),
+        ("同・ノッチ深さ合計(≥4dB)平均 [dB]",
+         lambda e: f"{e['pinna_comb_total_mean_db']:.1f}", max,
+         lambda e: e["pinna_comb_total_mean_db"]),
+        ("主ノッチ保存率(±1/12oct)",
+         lambda e: f"{e['recall']:.2f}", max, lambda e: e["recall"]),
+        ("うち6dB超の減衰つき保存 / コームノッチ重なり [本]",
+         lambda e: f"{e['preserved_attenuated']} / {e['preserved_with_comb_notch']}",
+         None, None),
+        ("消失: コーム山埋没 / コームノッチ / 他 [本]",
+         lambda e: f"{e['lost_comb_peak']} / {e['lost_comb_notch']} / {e['lost_other']}",
+         None, None),
+        ("保存ノッチの周波数ズレ 中央値 [セント]",
+         lambda e: f"{e['freq_shift_cents_median']:.0f}", min,
+         lambda e: e["freq_shift_cents_median"]),
+        ("保存ノッチの深さ変化 平均 [dB]",
+         lambda e: f"{e['depth_change_db_mean']:+.1f}", max,
+         lambda e: -abs(e["depth_change_db_mean"])),
+        ("偽ノッチ率(基準に無い製品ノッチ / 総数)",
+         lambda e: f"{e['spurious_rate']:.2f}({e['n_product_notches']}本)", min,
+         lambda e: e["spurious_rate"]),
+    ]
+    rows = []
+    for label, fmt, agg, keyf in keys:
+        best = agg(ROBUST4, key=lambda m: keyf(notchp["models"][m])) if agg else None
+        rows.append("<tr><td>" + label + "</td>" + "".join(
+            f"<td class='num{' good' if m == best else ''}'>{fmt(notchp['models'][m])}</td>"
+            for m in ROBUST4
+        ) + "</tr>")
+    return "\n".join(rows)
+
+
+def panel_table() -> str:
+    head = "".join(f"<th>pp{s}</th>" for s in PANEL)
+    feats = [
+        ("外耳道の奥行き(先端から)[mm]", "recession_mm", "{:.0f}"),
+        ("コンカ深さ [mm]", "concha_depth_mm", "{:.0f}"),
+        ("耳介プローブ域 前後×上下 [mm]", None, None),
+    ]
+    rows = [f"<tr><th></th>{head}</tr>"]
+    for label, key, fmt in feats:
+        if key is None:
+            cells = "".join(
+                f"<td class='num'>{verify[s]['extent_x_mm']:.0f}×{verify[s]['extent_y_mm']:.0f}</td>"
+                for s in PANEL)
+        else:
+            cells = "".join(f"<td class='num'>{fmt.format(verify[s][key])}</td>" for s in PANEL)
         rows.append(f"<tr><td>{label}</td>{cells}</tr>")
     return "\n".join(rows)
 
@@ -111,7 +301,9 @@ footer {{ margin-top:3.5rem; padding-top:1.2rem; border-top:1px solid var(--line
 <h1>ヘッドホン4モデル音響比較</h1>
 <p class="lede">MDR-Z1R型・LCD型・DX10000CL型・DCA型(AMTS)の実機構造モデルを、実測ピンナ(HUTUBS被験者1)に対する
 3D FDTDシミュレーションで比較。「ピンナ全体に同一の波形・入射角・音量が届いているか」を、
-音源の責任範囲(入射波面)とピンナ散乱(空間キュー生成)に分離して評価した。</p>
+音源の責任範囲(入射波面)とピンナ散乱(空間キュー生成)に分離して評価した。
+さらに<strong>8被験者パネルでの個人差ロバスト性</strong>(セクション6)と
+<strong>±1〜2mm再装着ズレへの感度</strong>(セクション7)を定量した。</p>
 
 <div class="method"><strong>方法:</strong> 音響FDTD(0.5mm格子、20kHzで34点/波長、GPU)。
 ピンナ表面プローブ約260点(ドライバから見通せる面のみ、外耳道基準)。傾き0°、
@@ -130,7 +322,11 @@ Z1R/LCD/DXは実機のイヤパッド深さ(2〜3cm)の範囲、DCAは厚さ21mm
 <strong>指標(v3改定)</strong>: 波形一致は<strong>振幅込み</strong>
 (2·xcorr/(Eₓ+Eᵧ)、形と音圧が両方合って1.0 — −10dBの微弱プローブは形が完璧でも0.58)。
 旧「形状のみ相関」は音圧ゼロ近くでも高得点になる欠陥があり参考値に降格。
-到達時間はエンベロープピークからオンセット(50%立ち上がり)基準へ変更。</div>
+到達時間はエンベロープピークからオンセット(50%立ち上がり)基準へ変更。
+<strong>ロバスト性スタディ(セクション6・7)</strong>: HUTUBS 8被験者パネル
+(形状特徴のgreedy max-min選定)×4モデル、および pp1 での再装着摂動
+(駆動距離−1/+2mm、上下±2mm — 上下ズレはピンナ・外耳道・プローブごと移動しドライバは固定)×4モデル。
+各条件で構造あり/裸ソース×incident/pinnaの4ランを回し、C(f)と核心帯指標を基準と同一プロトコルで算出。</div>
 
 <h2>1. 比較した4モデル</h2>
 <table>
@@ -276,7 +472,9 @@ LCD=レベル平坦だが形に局所乱れ、DCA=両方大。</p>
 <figcaption>外耳道でのカップリング成分。空間キュー帯(5〜10kHz)での振れ幅:
 <strong>LCD 22.2dB(最深ノッチ−7.9dB@6.4kHz)</strong> > Z1R 15.9dB(@5.6kHz) >
 DX 14.6dB(@9.6kHz) > <strong>DCA 11.9dB(@7.2kHz、最小)</strong> —
-DCA以外はおおむね前面の固体率×近接度の順。</figcaption>
+DCA以外はおおむね前面の固体率×近接度の順。
+ただしこの序列は<strong>pp1固有</strong>: 8被験者平均では
+Z1R 20.1 ≈ DCA 19.9 > DX 17.8 > LCD 16.5 dBとほぼ丸ごと入れ替わる(セクション6)。</figcaption>
 </figure>
 <p><strong>2つの寄与の分離結果</strong>:
 (1) <strong>入射幾何</strong>(裸でも残る差): 平面波(LCD)と曲面波(Z1R/DX)では
@@ -312,17 +510,212 @@ DCA以外はおおむね前面の固体率×近接度の順。</figcaption>
 理想化交互配置(核心帯0.395)→実測マップ(0.515)の+0.12は、
 前面設計の細部(どのセルを塞ぐか)が総量指標を大きく動かすことの実証。</p>
 
-<h2>6. 結論 — 単独の勝者はいない、目的で選ぶ</h2>
+<h2>6. 個人差ロバスト性 — 8被験者パネル(4モデル)</h2>
+<p>ここまでの比較は全てHUTUBS被験者1(pp1)の耳に対するもの。しかしカップリングコームの
+ノッチ周波数は往復経路差の物理(f ≈ c(2n+1)/2Δ)で決まり、Δは「ピンナ各点⇄前面」の距離 —
+コンカ深さ・耳介突出量の個人差はまさにこのmmオーダーで分布する。そこで
+<strong>HUTUBSから追加13被験者の頭部メッシュを取得し、形状が最もばらける7名+pp1の
+8被験者パネル</strong>で4モデル(Z1R/LCD/DX/DCA実測)×構造あり/裸ソース×incident/pinnaの全128ランを回した
+(パネル選定は外耳道奥行き・コンカ深さ・耳介寸法の正規化特徴空間でのgreedy max-min)。</p>
+<p><strong>パイプラインの頑健性(前提検証):</strong> 外耳道検出(干渉軸最近傍)は
+検証した14被験者全員で軸から0.5mm以内に収まり、プローブ選択(突出マスク+コンカ円板+
+視線判定)も全員で245〜273点を確保 — pp1向けに調整した手法は修正なしで全被験者に成立した。</p>
+<table>{panel_table()}</table>
+<figure><img src="data:image/png;base64,{imgs['subjects']}" alt="被験者パネル">
+<figcaption>検証した14被験者のプローブ配置(外耳道基準)。+ = 外耳道入口、色 = 先端からの奥行き。
+外耳道の奥行きは19〜36mmと約2倍の開きがある。</figcaption></figure>
+
+<h3>コームは「ヘッドホン×耳」の共同プロパティ — 周波数も、強度も</h3>
+<figure><img src="data:image/png;base64,{imgs['subj_comb']}" alt="コーム個人間分散">
+<figcaption>同一モデルのC(f)を8被験者で重ね描き。ノッチ周波数は人ごとに5.6〜10kHzへ散り、
+「同じヘッドホンでも人ごとに別のコーム」になることが直接確認できる。</figcaption></figure>
+<table>
+<tr><th>コーム(5〜10kHz、8被験者)</th><th>Z1R(開口71%)</th><th>LCD(開口32%)</th><th>DX(開口52%)</th><th>DCA(AMTS実測)</th></tr>
+{comb_table()}
+</table>
+<p><strong>予想通りだった点:</strong> ノッチ周波数は被験者間で5.6〜10kHzに分散し
+(モデル内で最大4kHz幅)、コーム<strong>周波数</strong>が個人の耳形状で決まることは完全に確認された。
+ハードウェアノッチが本人のピンナノッチと衝突(1/12オクターブ以内=キュー消失リスク)する率は
+22〜38%で、残りはピンナノッチの隙間に落ちて<strong>偽キュー</strong>になる —
+どのモデルも「誰の耳でも安全」ではなく、当たり外れは確率的に起きる。</p>
+<p><strong>予想を覆した点:</strong> コーム<strong>強度</strong>は「前面固体率×近接度で
+ヘッドホン側が決める」と仮定していたが、これは成り立たない。
+pp1でのLCD 22.2dBは<strong>8被験者中の最大値</strong>(レンジ12.2〜22.2dB)、
+逆にpp1でのDCA 11.9dBは<strong>ほぼ最小値</strong>(レンジ11.7〜37.0dB)で、
+被験者平均では<strong>Z1R 20.1±3.8 ≈ DCA 19.9±7.9 > DX 17.8±5.0 > LCD 16.5±3.2 dB</strong>と
+pp1の序列(LCD > Z1R > DX > DCA)がほぼ丸ごと入れ替わった —
+<strong>pp1はたまたまLCDに最悪・DCAに最良の耳だった</strong>。モデル内の被験者間σ(3.2〜7.9dB)は
+モデル間の平均差(3.6dB)を上回り、<strong>強度もまた共同プロパティ</strong>。
+とりわけ<strong>DCAのσ7.9dBは4モデル最大</strong>で、pp82(外耳道奥行き36mmのパネル最深耳)では
+振れ幅37dB・最深ノッチ−28.9dB@8kHzという壊滅的なコームになる。
+物理的に筋は通っている: AMTSのλ/4側枝・散点配置による反射抑制は<strong>位相設計された
+干渉ベースの機構</strong>であり、想定の幾何(反射経路)から外れた耳では抑制が外れて逆に共振する。
+抵抗性の吸収(実機に加わる熱粘性損失)は位相に依存しないため、実機ではこの外れ値は
+剛体モデルより緩和されるはず — 剛体近似はDCAの個人間分散を過大評価する側に働く。</p>
+
+<h4>耳の側から見る — 耳介由来のコーム深さランキング</h4>
+<p>同じデータを耳を軸に転置すると、「どの耳がコームを深くするか」のランキングになる
+(4モデル平均のコーム振れ幅):</p>
+<table>{ear_ranking_table()}</table>
+<p>コーム深さと最も強く相関する形状特徴は<strong>コンカ深さ</strong>
+(Spearman +0.60、Pearson +0.54; 外耳道奥行き +0.4前後、n=8の示唆的水準)—
+深いコンカは強い凹面反射鏡として働き、前面との往復干渉を増幅する、という物理と整合する。
+一方、耳介固有の主ノッチ深さ(透明基準TF)とは弱い負相関(−0.40):
+「固有ノッチが深い耳ほどコームも深い」わけではなく、コーム増幅は主にコンカの器の深さが担う。
+なお<strong>pp1は8耳中2番目にマイルドな耳</strong>(16.2dB)であり、
+セクション1〜5のpp1単独比較がコーム影響を甘めに見せていた構造的理由がここにある。
+首位のpp82(コーム平均21.6dB、DCAで振れ幅37dB)のような深い耳では、
+どのモデルでもコームがピンナ固有ノッチ(10〜25dB)と同等以上のスケールに達する。</p>
+
+<h3>ポスト・ピンナ指標の被験者間分散 — ロバスト性ランキング</h3>
+<figure><img src="data:image/png;base64,{imgs['subj_var']}" alt="指標の被験者間分散"></figure>
+<table>
+<tr><th>ピンナ有り・核心帯(5〜10kHz、8被験者)</th><th>Z1R</th><th>LCD</th><th>DX10000CL</th><th>DCA(AMTS)</th></tr>
+{variance_table()}
+</table>
+<p>被験者平均で見ると<strong>LCDの核心帯波形一致0.541±0.029が明確な首位</strong>
+(8人全員が0.505以上 — pp1比較での「DX/DCAと同着」はpp1がLCDに不利な耳だった)。
+<strong>品質の一貫性(被験者間σの小ささ)ではDXが首位</strong>(σ0.022、
+到達時間ばらつきも27±3µsと圧倒的に一貫)— 小口径ドームの中央集中ビームは
+レベルむらという固定費を払う代わりに、誰の耳に対しても同じように振る舞う。
+<strong>Z1R(0.487±0.037)は平均最下位</strong>、<strong>DCA(0.515±0.047)はσ最大</strong>:
+DCAは耳との相性で0.470〜0.620まで振れる「当たり外れ」の大きいモデルで、
+コームの個人間分散(σ7.9dB)がそのまま総合指標に波及している。</p>
+<p><strong>仮説検証(「コームが強い設計ほど個人差に敏感」):</strong> 支持が強まった。
+コーム振れ幅の上位2モデル(Z1R 20.1 / DCA 19.9dB)がそのままσの上位2
+(DCA 0.047 / Z1R 0.037)を占める(スピアマンρ=0.6、n=4)。
+中位のLCD/DXは入れ替わるので単調な予測子とまでは言えないが、
+「強い(または大きくばらつく)コームを持ち込む設計は、届く品質も人次第になる」
+という因果は4モデルで一貫している。</p>
+
+<h3>個人ピンナ応答の保存 — 透明ドライバ基準</h3>
+<p>ここで解釈上の注意: 上の被験者間σは「品質の一貫性」であって、応答そのものは
+<strong>耳ごとに違うのが正しい状態</strong>(むしろ全員同じ応答になる設計は個人キューを洗い流している)。
+「正しく個人化されているか」を測るには基準が要る。そこで<strong>透明ドライバ基準 TF_tr</strong>を
+モデルごとに立てた: <strong>そのモデル自身の開口(形状・振幅テーパー・位置とも同一)から
+同じ波形が出るが、ドライバ実体も前面構造も存在しない</strong>加算型モノポール面
+(バッフル付きピストンのRayleigh積分の理想化。ピンナからの反射はドライバ位置を素通りして
+戻らない)。TF_trには「そのモデルの照射幾何がピンナだけで作るはずの応答」= ピンナ由来のみの
+ピーク・ノッチが写る。開口・距離・波形が構造ありランと完全一致するので、
+口径や配置距離の交絡なしに製品との差分が取れる。分解は3段:
+<strong>P_body</strong> = corr(裸, 透明) がドライバ実体の再散乱のみ、
+<strong>P_str</strong> = corr(構造あり, 裸) が前面構造のみ、
+<strong>P_tot</strong> = corr(構造あり, 透明) が製品全体。
+さらに各TFからパネル平均を引いた<strong>個人署名</strong>(その耳をその耳たらしめている部分 —
+コンカ共鳴のような万人共通成分は生TFの相関を底上げするが個人情報を運ばない)同士の相関
+<strong>P_sig_tot</strong> = corr(署名 構造あり, 署名 透明) を本命指標とする:
+<strong>透明ドライバなら届いていたはずの個人由来応答を、その製品は届けるか</strong>。</p>
+<figure><img src="data:image/png;base64,{imgs['preservation']}" alt="個人ピンナ応答の保存">
+<figcaption>左上: 保存の3分解(薄=ドライバ実体のみ、中=構造のみ、濃=製品全体)。
+右上: 個人署名の保存 P_sig_tot(点=被験者)。下段: 署名の実例 —
+破線(透明基準=その人固有のピンナ特徴)を実線(製品)がどれだけなぞれているか。</figcaption></figure>
+<table>
+<tr><th>保存係数(8被験者 平均±σ)</th><th>Z1R</th><th>LCD</th><th>DX10000CL</th><th>DCA(AMTS)</th></tr>
+{preservation_table()}
+</table>
+<p>分解を読むと、まず<strong>ドライバ実体の再散乱は軽い</strong>(P_body 0.80〜0.91、
+最遠配置のDCAが最小擾乱0.914)— 保存を壊す主犯は全モデルで<strong>前面構造</strong>
+(P_str 0.63〜0.75)。本命の個人署名保存 P_sig_tot は
+<strong>Z1R 0.663±0.15 > LCD 0.619±0.25 ≈ DCA 0.616±0.15 > DX 0.518±0.29</strong>、
+核心帯でも<strong>Z1R 0.546首位</strong>(DCA 0.525 > DX 0.438 > LCD 0.419)。
+興味深いのは<strong>Z1Rの逆転</strong>: 被験者間ロバスト性(前節)では最下位なのに、
+「自分の開口が作るはずの応答をどれだけ残すか」では首位に立つ — 大口径照射がピンナに与える
+応答はそもそも豊かで、開口率71%のグリルはそれをよく素通しする。
+コームが強い(=誰の耳かで結果が変わる)ことと、署名をよく残すことは両立する:
+Z1Rは「人によって違うが、その人の耳らしさは残る」、
+DXは平均こそ一貫(前節σ0.022)だが署名保存は最下位かつ被験者幅0.08〜0.88と最大 —
+<strong>「品質の一貫性」と「個人化の忠実さ」は別の軸</strong>だと数字が示している。
+なおZ1R/DCAでP_tot > P_strとなる(構造あり応答が裸より透明基準に近い)のは、
+実体散乱と構造散乱が相関の上で非加法的に打ち消し合うため。</p>
+
+<h3>ノッチ単位で見る — 個人ノッチは「変なノッチ」に潰されるか</h3>
+<p>相関は曲線全体の形を見るため、キューの本体である<strong>離散的なノッチ</strong>の生死を
+見逃しうる(ノッチ1本が潰れても広帯域の形が似ていれば高相関になる)。そこで透明基準TFの
+主ノッチ(プロミネンス≥4dB — 各被験者の主ピンナノッチ、多くは8〜10kHz・深さ10〜25dB)を
+基準に、製品TFで±1/12オクターブ以内に対応ノッチが残るかを直接数えた。
+消えたノッチは、その位置にカップリングコームC(f)のハードウェアノッチが重なっていれば
+「<strong>コーム衝突による消失</strong>」、なければ「その他(平坦化・埋め戻し)」に分類。
+逆に製品にあって基準に無いノッチ = ハードウェアが<strong>注入した偽キュー</strong>も数えた。</p>
+<figure><img src="data:image/png;base64,{imgs['notch_pres']}" alt="ノッチ保存">
+<figcaption>左: 基準ノッチの運命(保存 / 減衰つき保存 / コーム衝突で消失 / その他)。
+中: 保存されたノッチの周波数対応(対角=無変形)。右: 偽ノッチ率。</figcaption></figure>
+<table>
+<tr><th>ノッチ収支(8被験者)</th><th>Z1R</th><th>LCD</th><th>DX10000CL</th><th>DCA(AMTS)</th></tr>
+{notch_table()}
+</table>
+<p>まず<strong>「耳介由来コーム」の生成力そのものに設計差が出る</strong> —
+どのモデルの照射が、耳介だけで深いノッチ構造を作るか:
+主ノッチ深さは<strong>LCD 17.7±6.8 > DCA 12.3±10.9 > Z1R 8.7±5.1 > DX 7.7±7.4 dB</strong>、
+本数も<strong>LCD 12本 > DCA 10本 > Z1R 6本 > DX 5本</strong>。
+大型平面の照射は自由音場の平面波に最も近く、耳介の経路差干渉をフルにコヒーレント励起して
+深く豊かな個人キューの原材料を作る。小口径球面波(DX、9mm)はコンカ中心をほぼ法線入射で
+照らすだけで耳介コームが最も浅い — <strong>キュー生成力: LCD > DCA > Z1R > DX</strong>
+(DCAはσ±10.9と耳による差が最大)。保存率は<strong>Z1R/LCD 0.67、DX/DCA 0.60</strong>とほぼ横並びで、
+どのモデルも<strong>個人の主ノッチの約1/3を失う</strong>(絶対数ではLCDが8/12本と最多の個人キューを届ける)。
+機構の内訳が事前の想定を覆した:
+<strong>消失11本のうち10本は「コームの山による埋没」で、コームノッチとの衝突による消失はゼロ</strong>。
+逆にコームノッチが個人ノッチに重なった場合(生存21本中18本)はノッチが<strong>深くなって生き残る</strong>
+(Δ深さ平均+2.4〜+5.7dB = キューの誇張)。つまりコームは個人ノッチを「削る」のではなく、
+<strong>位相のくじ引き</strong>を仕掛ける: 谷が当たれば誇張、山が当たれば埋没。
+どちらも歪みだが向きが逆で、これが再装着のたびに引き直される(セクション7のコーム移動)。
+保存されたノッチの周波数はほぼ動かない(中央値0セント、DCAのみ72セント —
+AMTSの帯域-場所マッピングの署名)。
+最後に<strong>偽ノッチ</strong>: 製品TFのノッチの65〜83%は透明基準に存在しない注入キュー
+(コームの歯)であり、外耳道に届くノッチの過半はピンナ由来ではない。
+脳は自分のピンナ由来ノッチをこのハードウェアノッチの藪の中から学習し直すことになる —
+装着のたびに藪が動く(セクション7)ことまで含めて、
+ヘッドホン空間音響の「慣れ」がなぜ要るのかを示す数字と言える。</p>
+
+<h2>7. 再装着感度 — 駆動距離±・上下±のズレ(pp1、4モデル)</h2>
+<p class="lede">「掛け直すと音像が変わる」を定量する: pp1に対し、駆動距離−1mm(パッド圧縮の内側限界)/
++2mm(緩い装着)と、上下±2mm(高め/低めの装着 — ピンナ・外耳道・プローブごと移動、ドライバ固定)の
+4摂動×4モデル、各摂動で構造あり/裸×incident/pinnaの計64ランを基準セットと同一プロトコルで実行した。
+DCAはAMTSの傾斜軸が上下(y)なので、上下ズレは透過マップの並進も同時に検査する。</p>
+<figure><img src="data:image/png;base64,{imgs['reseat']}" alt="再装着感度"></figure>
+<table>
+<tr><th>再装着摂動(基準比)</th><th>Z1R</th><th>LCD</th><th>DX10000CL</th><th>DCA(AMTS)</th></tr>
+{reseat_table()}
+</table>
+<p><strong>コームは軸方向ズレで数百Hz/mm動く。</strong> 最深ノッチの追跡はコームの歯の間を
+飛び移る(tooth-hopping)ため、C(f)全体のlog-f相互相関でパターンの平行移動を推定した:
+近づくと上方、離れると下方に移動し、レートは<strong>LCD 70 / Z1R 145 / DX 177 /
+DCA 283 Hz/mm</strong>(軸+2mmではDCAは−347Hz/mm) — 往復経路差の物理(f·ΔΔ/Δ ≈ 数百Hz/mm)の
+予測通りで、±1〜2mmの再装着でノッチが数百Hz〜1kHz級動く。
+「掛け直すたびに音が違う」経験則のスケールと整合する。
+一方<strong>上下ズレはコームを平行移動させない</strong>(≤71Hz/mm) —
+代わりにコームの形そのものを変える(Z1Rは上下+2mmで振れ幅15.9→24.3dBに増大)。
+経路差の集合が一様にでなく非対称に組み変わるためで、軸ズレ=移調、上下ズレ=再編成、と役割が分かれる。</p>
+<p><strong>DCA最大変動仮説は棄却。</strong> 事前予想は「コーム移動+AMTS透過マップ並進の
+二重機構でDCAの変動が4モデル最大」だったが、結果は逆:
+コーム<strong>移動レート</strong>こそDCAが最大(283Hz/mm)で、軸+2mmのΔC RMS(5.8dB)もZ1R(5.7dB)と
+最大タイだが、<strong>核心帯指標の変動幅はDCAが4モデル最小</strong>(0.023 vs DX 0.058)。
+理由は2つ: (1) DCAのコームは元々浅い(11.9dB)ので、動いても外耳道スペクトルへの絶対的影響が小さい。
+(2) 恐れられた透過マップ並進は±2mmでは実質検出されない — 10kHz照射マップの基準⇔ズレ相関は
+全モデル・全条件でr≥0.99。傾斜による局所通過帯の移動(予測130〜200Hz/mm)は実在しても、
+マップ自体が2mmスケールでは滑らかなため相関を壊さない。
+逆に<strong>指標変動が最大なのはDX</strong>(0.058): 小口径ビームの中央集中は距離に敏感で、
+軸+2mmで核心帯波形一致が0.524→0.478に落ちる。
+まとめると、再装着で動くのは主に<strong>カップリングコーム(全モデルでΔC RMS 1〜6dB)</strong>であり、
+その帯域は空間キュー帯そのもの — 装着のたびに違うコームに脳が再適応する、という描像が
+4モデル共通に成り立つ。設計側の含意: コームを浅くする(DCA型のAMTS)ことは
+個人差だけでなく再装着変動の絶対量も抑える。</p>
+
+<h2>8. 結論 — 単独の勝者はいない、目的で選ぶ</h2>
 <div class="callout">
 <p><strong>LCD型(大型平面磁界)</strong>: 「音圧ごと同じ波形をピンナ全体に」という目標に最も近い
 (入射・振幅込み0.889、レベルσ1.8dB、入射角7.9°)。実寸の厚いマグネット列は深いスロットが
 コリメータとして働く。代償は開口率32%(写真実測)+厚さ10mm構造の音色影響 —
-外耳道でのカップリング変調が5〜10kHzで<strong>22.2dBと4モデル中最大</strong>
+外耳道でのカップリング変調がpp1では5〜10kHzで<strong>22.2dBと4モデル中最大</strong>
 (最深ノッチ−7.9dB@6.4kHz、櫛はヘルムホルツ共鳴ではなくピンナ⇄マグネット面の往復干渉が主因)—
-と、ピンナ後の方向純度の低さ(拡散度0.579)。</p>
+と、ピンナ後の方向純度の低さ(拡散度0.579)。
+ただし8被験者で均すとコームは平均16.5dBと3モデル中最小(pp1はLCDに最悪の耳だった)で、
+<strong>核心帯ポスト・ピンナ0.541±0.029は被験者平均の明確な首位</strong>(セクション6)—
+個人差込みで見るとLCDの評価はむしろ上がる。</p>
 <p><strong>DX10000CL型(小径フルドーム)</strong>: 時間整列(11-20µs)・ピンナ後の方向純度(0.439)は最強。
 ただし小口径ビームの中央集中により周縁の音圧が最も深く落ち(−14.3dB)、振幅込みでは3位。
-「音像の輪郭・定位の鋭さ」を最優先し、レベルむらを受容する選択。</p>
+「音像の輪郭・定位の鋭さ」を最優先し、レベルむらを受容する選択。
+<strong>個人差ロバスト性は3モデル中首位</strong>(核心帯σ0.022、到達27±3µs、セクション6)—
+中央集中ビームは誰の耳に対しても同じように振る舞う。</p>
 <p><strong>DCA型(平面磁界+AMTS、実測潰しマップ)</strong>: メタマテリアルの狙いのうち
 「反射の抑制」は定量的に確認できた — 前面がピンナに最接近(3mm)なのに<strong>カップリングコームは
 11.9dBで4モデル最小</strong>(固定コーム重畳が最も少ない。剛体=無損失での値なので実機はさらに良い側)。
@@ -330,28 +723,51 @@ DCA以外はおおむね前面の固体率×近接度の順。</figcaption>
 8kHzは薄端側、10kHzは両端、とピンナの違う場所を違う周波数が照らし、スペクトル形状の
 空間ばらつきは他モデルの約4倍(σ(10k−8k)=4.1dB、8k/10kマップ相関0.55)。
 帯域ごとの部位重み付けで成立するピンナキューにとって、これは総量指標に表れないコストであり、
-21mm厚スタックの距離42mm・装着ズレ感度(透過マップ並進+コーム移動)と合わせてDCA固有の弱点。
-要するに<strong>コーム(音色寄り)は最良、照射の帯域均一性(キュー寄り)は最下位</strong>という
-両極端のモデル。</p>
+21mm厚スタックの強制する距離42mmと合わせてDCA固有の弱点。
+一方、懸念していた装着ズレ感度は<strong>むしろ4モデル最小</strong>と判明(±1〜2mm再装着での
+核心帯指標変動0.023、透過マップ並進はr≥0.99で実質不検出 — セクション7):
+浅いコームは「動いても被害が小さい」。
+ただし「コーム最小」は<strong>pp1固有</strong>だった: 8被験者ではコームは11.7〜37.0dBと
+4モデル中最大の個人間分散を示し(pp82では−28.9dBの壊滅的ノッチ)、位相設計された
+干渉ベースの反射抑制は<strong>耳形状との相性が出る</strong>(セクション6。
+実機の熱粘性損失は位相非依存なので外れ値は緩和されるはず — 剛体近似はDCAに厳しい側)。
+透明ドライバ基準の分解では、遠距離配置のおかげで<strong>ドライバ実体の再散乱は4モデル最小
+(P_body 0.914)</strong>だが、構造のみの署名保存は最下位(P_sig_str 0.448)のままで、
+総合の署名保存は0.616(Z1Rに次ぐ2位圏、被験者幅0.41〜0.81と安定)。
+保存ノッチが平均72セント動く唯一のモデルでもある(帯域-場所マッピングの署名)。
+要するに<strong>装着再現性は最良、個人間では最大の「当たり外れ」を持ち、
+照射の帯域均一性(キュー寄り)は最下位</strong>という、良くも悪くもチューニングの効いたモデル。</p>
 <p><strong>MDR-Z1R型(30mmドーム+ドーナツエッジ)</strong>: 空間キュー核心帯(5〜10kHz)の
 <strong>入射品質で単独首位(0.904)</strong>、レベル均一・最悪ドロップも最良 —
 大振動板は「効く帯域」で確かに効いている。2稜線干渉の代償は主に12.5kHz超に現れ、
-空間聴覚への実害は小さい。ピンナ後の総合はLCD/DXに一歩譲る。</p>
+空間聴覚への実害は小さい。ピンナ後の総合はLCD/DXに一歩譲る。
+弱点は<strong>個人差への敏感さ</strong>(コーム平均20.1dB、核心帯平均も最下位0.487、セクション6)—
+pp1で見えた入射品質の優位は、耳が変わると保てない。
+一方<strong>透明ドライバ基準の個人署名保存では首位(P_sig_tot 0.663)</strong>:
+人によって結果は変わるが、その人の耳らしさ自体は71%開口のグリルをよく素通しする —
+「一貫性は低いが忠実さは高い」というプロファイル。</p>
 </div>
 <p class="lede"><strong>ピンナ剛体近似の検証:</strong> 皮膚・軟骨の音響インピーダンス(≈1.5MRayl)は
 空気の3600倍で反射率|R|≈0.999(吸収~0.1%/反射)— 剛体境界BEMのHRTF計算が実測と±1dBで一致する
 のはこのため。感度実験として実皮膚の約60倍の吸音層(6%/反射)をピンナ表面に付けても
 指標変化は類似度+0.05・入射角−5.7°・TF平均−1.5dB程度 → 実皮膚相当ではその1/60で無視可能。
 ただし高Q共鳴ピーク(コンカ+25dB)は剛体でやや過大になる(毛髪・衣服の減衰も未モデル)。
-その他の限界: 単一被験者(HUTUBS pp1)・左耳、最小距離・傾き0°の一点比較。振動板は理想運動(分割振動・歪みなし)。
-指標と知覚閾値の対応付けは未較正。前後方向のドライバ角度付けは未検証。</p>
+その他の限界: セクション1〜5の詳細解剖は単一被験者(HUTUBS pp1)・左耳
+(個人差はセクション6で8被験者×4モデルに拡張済み)。
+全ラン最小距離・傾き0°、イヤパッド側壁なし(横方向は無響)。
+振動板は理想運動(分割振動・歪みなし)。指標と知覚閾値の対応付けは未較正。
+前後方向のドライバ角度付けは未検証。</p>
 
-<h2>7. 再現</h2>
+<h2>9. 再現</h2>
 <p><code>configs/hutubs_70mm_z1r_v2.yaml</code> /
 <code>configs/hutubs_90mm_planar_v2.yaml</code> /
 <code>configs/hutubs_40mm_dome_v2.yaml</code> /
 <code>configs/hutubs_dca_amts_real.yaml</code>(理想化交互配置: <code>hutubs_dca_amts.yaml</code>)。
-入射波面プロトコルは <code>build_scene(config, incident_only=True)</code>。</p>
+入射波面プロトコルは <code>build_scene(config, incident_only=True)</code>。
+ロバスト性スタディ(セクション6・7)は <code>scripts/robustness/</code>:
+<code>verify_subjects</code> → <code>select_subjects</code> → <code>run_subjects</code> /
+<code>run_reseat</code> → <code>fig_subject_comb</code> / <code>fig_subject_variance</code> /
+<code>fig_reseat</code>。上下ズレは <code>PinnaSpec.offset_y</code>。</p>
 <footer>headphone_sims — スタガード格子 圧力-速度 FDTD(PyTorch/GPU)。
 検証: 自由音場1/r・バッフル付きピストン指向性(解析解±0.10)・気密性・エネルギー有界性。
 ピンナ: HUTUBS (Brinkmann et al. 2019, CC BY 4.0)。</footer>

@@ -54,6 +54,7 @@ select = ["E", "F", "I", "UP", "B", "SIM", "NPY", "RUF"]
 # setup before imports (E402), long inline-HTML lines (E501), and terse
 # plotting style are acceptable here.
 "scripts/report/*" = ["E402", "E501", "E702", "RUF001", "B007", "B905", "RUF005", "SIM115"]
+"scripts/robustness/*" = ["E402", "E501", "E702", "RUF001", "B007", "B905", "RUF005", "SIM115"]
 
 [tool.mypy]
 python_version = "3.12"
