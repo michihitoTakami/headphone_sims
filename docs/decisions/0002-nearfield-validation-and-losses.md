@@ -42,13 +42,42 @@ neck losses).
    vs the sponge's -60 dB at 30 cells on the same setup. The sponge stays
    the default until the published run set is regenerated.
 
+6. **Deterministic domain sizing.** A float-noise ceil artifact
+   (`ceil(300.0000000004) = 301`) could put the whole assembly half a cell
+   off the voxel lattice depending on part dimensions; fixed with an epsilon
+   guard. Scene-realization (voxelization-phase) noise on the canal C(f) at
+   dx = 0.5 mm was measured at 1.4-1.9 dB RMS for a pure half-cell shift and
+   up to ~6.5 dB RMS for a re-realization with domain resize — larger than
+   the boundary error, and the noise floor for any tooth-level C(f) claim.
+
+## Study outcomes (2026-08, details in Issue #6 / runs/*.json)
+
+- Boundary: the production 30-cell sponge agrees with the C-PML arbiter at
+  identical lattice phase within 1.1-1.7 dB RMS core C(f) for 3 of 4 models;
+  the exception is DCA-AMTS, whose comb swing reads 4 dB too shallow under
+  the sponge (11.9 dB published vs 15.9 dB boundary-clean). The pp1
+  boundary-clean comb ranking becomes LCD 20.7 > Z1R 17.4 > DCA 15.9 >
+  DX 13.6 dB — DCA loses the "shallowest comb" title to DX. Comb-dependent
+  claims should be re-based on absorber="cpml".
+- Grid convergence (dx 0.5/0.4/0.3, z1r + dca2): the headline spatial
+  quantities are robust — incident illumination maps correlate >= 0.98
+  between resolutions, voxelized porosity is dx-stable within 2%, and the
+  spatio-spectral spread sigma(L10k - L8k) holds at ~4 dB (DCA) vs ~1 dB
+  (reference) at every dx. NOT converged at dx = 0.5: canal-C(f) tooth
+  structure (swing drifts 15.9->19.1 / 11.9->17.8 dB toward the
+  boundary-clean values) and the absolute level of the amplitude-aware
+  similarity aggregate (z1r core 0.49->0.74). Staircase-area correction
+  (PFFDTD-style) gate is therefore TRIGGERED for canal-spectrum work —
+  scheduled as a follow-up together with a CPML re-baseline of the run sets.
+- Viscous bore losses on DCA at dx 0.5: comb swing 11.9 -> 11.0 dB, deepest
+  notch -5.7 -> -5.0 dB — real but small softening; the rigid model's AMTS
+  absorption underestimate is dominated by the boundary/resolution effects
+  above, not by the missing viscosity.
+
 ## Consequences
 
 - Published pp1/panel numbers remain reproducible: legacy metrics are
   unchanged when no aperture is passed; new metrics are additive.
-- Convergence (dx 0.5/0.4/0.3), boundary-sensitivity, and probe-audit
-  results live in Issue #6 and `runs/*.json`; docs record only the adopted
-  mechanisms above.
 - Not modeled, still: thermal boundary-layer losses, air absorption
   (negligible over <50 mm paths below 20 kHz), finite surface impedance of
-  skin, staircase surface-area correction (gated on the convergence result).
+  skin, staircase surface-area correction (gate triggered, see above).

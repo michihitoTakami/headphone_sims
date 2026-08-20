@@ -89,8 +89,12 @@ def main() -> None:
             maps[um] = {
                 fk: band_map(sp[0], fk, model) for fk in (8000.0, 10000.0)
             }
+            # The published headline quantity: incident-illumination spatial
+            # spread of the 10k-8k band-level difference across probes.
+            l8, l10 = maps[um][8000.0][1], maps[um][10000.0][1]
             entry["dx"][um] = {
                 **comb_stats(f, c),
+                "sigma_l10_l8_db": float(np.std(l10 - l8)),
                 "metrics": core_metrics(sp[1], model),
                 "porosity": porosity.get(f"{model}_dx{um}"),
             }
@@ -145,7 +149,8 @@ def main() -> None:
             print(
                 f"  dx{um} swing {e['swing_db']:5.1f} dB notch {e['notch_db']:6.1f} dB "
                 f"@ {e['notch_hz'] / 1e3:5.2f} kHz  core sim {m['similarity_mean']:.3f} "
-                f"shapeσ {m['spectral_shape_spread_db_rms']:.2f} dB",
+                f"shapeσ {m['spectral_shape_spread_db_rms']:.2f} dB  "
+                f"σ(10k-8k) {e['sigma_l10_l8_db']:.2f} dB",
                 flush=True,
             )
         for a, b in ((500, 400), (400, 300)):
@@ -154,15 +159,16 @@ def main() -> None:
                 f"10k {entry[f'map10k_corr_{a}_{b}']:.3f}"
             )
 
-    # headline ordering check: DCA's shape spread stays well above the reference
+    # Headline ordering check on the PUBLISHED quantity: DCA's incident
+    # illumination shows a far larger spatial spread of (L10k - L8k) than the
+    # reference at every resolution.
     shape = {
-        m: [summary[m]["dx"][um]["metrics"]["spectral_shape_spread_db_rms"] for um in DX_UM]
-        for m in MODELS
+        m: [summary[m]["dx"][um]["sigma_l10_l8_db"] for um in DX_UM] for m in MODELS
     }
     summary["ordering_dca_gt_ref_all_dx"] = bool(
         all(d > z for d, z in zip(shape["dca2"], shape["z1r"], strict=True))
     )
-    print(f"DCA shape-σ > Z1R at every dx: {summary['ordering_dca_gt_ref_all_dx']}")
+    print(f"DCA σ(10k-8k) > Z1R at every dx: {summary['ordering_dca_gt_ref_all_dx']}")
 
     fig.suptitle("格子収束: dx = 0.5 / 0.4 / 0.3 mm (pp1)", fontsize=12.5)
     fig.savefig("runs/convergence.png", dpi=115, bbox_inches="tight")
