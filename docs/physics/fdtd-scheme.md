@@ -24,10 +24,32 @@ velocity component, applied once per step.
 
 ## Absorbing boundary
 
-Graded sponge over the outer `thickness` cells (default 30): multiplicative
-damping `exp(-sigma dt)` with `sigma = sigma_max * depth^3`, sigma_max = 6e4/s.
-Measured reflection < -40 dB (validation test). CPML is a possible later
-upgrade if late-window metrics need a cleaner floor.
+Two absorbers, selected by `SceneConfig.absorber`:
+
+- `"sponge"` (default): graded sponge over the outer `thickness` cells
+  (default 30): multiplicative damping `exp(-sigma dt)` with
+  `sigma = sigma_max * depth^3`, sigma_max = 6e4/s. Measured reflection
+  < -40 dB (validation test).
+- `"cpml"`: convolutional PML (Roden & Gedney recursive convolution,
+  kappa = 1) on the pressure-gradient and velocity-divergence terms inside
+  the boundary slabs; polynomial sigma grading designed for R = 1e-6, linear
+  alpha ramp for grazing/evanescent stabilization. Measured reflection
+  ~ -114 dB at 15 cells (vs sponge -60 dB at 30 cells on the same setup) —
+  use for late-window metrics, long records (fine frequency resolution), or
+  boundary-sensitivity checks. Memory: psi variables only in the slabs.
+
+## Viscous bore losses (optional, per filter)
+
+`FilterSpec(viscous_losses=True)` applies Maa/Crandall's tube resistance
+`Phi = (8 eta / a^2) sqrt(1 + s^2/32)` (evaluated at
+`viscous_eval_frequency`, default 7 kHz) as an equivalent-fluid momentum sink
+`sigma = Phi / rho` on the bore air cells (`plate_bore` / `rect_plate_bore`;
+the AMTS pattern excludes the carved-away air above its sloped top).
+Viscous-only, frequency-fixed: no thermal boundary-layer loss, no reactive
+correction — a lower bound on real thermoviscous damping, with the rigid
+default as the zero-loss bound. Validated: the sigma-slab plane-wave
+attenuation matches `exp(-sigma L / 2c)` within 5% (validation test), and the
+Maa formula is unit-tested against its Poiseuille and boundary-layer limits.
 
 ## Sources
 
@@ -64,8 +86,13 @@ must run after the masks, hence the two-half-step API.
 ## Receivers
 
 Trilinear interpolation of p and each staggered v component onto probe
-positions; the p/v half-step time offset (~0.4 us at dx = 0.5 mm) is left
-uncorrected (negligible in the audio band).
+positions. The p/v half-step time offset (~0.4 us at dx = 0.5 mm) is
+midpoint-corrected at analysis time (`compute_metrics` averages consecutive v
+samples onto p's time grid before forming intensities). Probes are accepted
+only when every corner of ALL FOUR interpolation stencils (p and the three
+staggered v components) reads an air cell — a velocity corner on a
+rigid-masked face records a forced zero and biases intensity metrics
+(`probe_stencil_air_mask`); achieved surface clearance is reported per build.
 
 ## Default resolution
 

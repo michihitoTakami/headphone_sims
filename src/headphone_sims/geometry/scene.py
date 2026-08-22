@@ -15,7 +15,8 @@ import numpy as np
 import numpy.typing as npt
 import torch
 
-from headphone_sims.fdtd.boundaries import SpongeConfig
+from headphone_sims.analysis.metrics import ApertureSpec
+from headphone_sims.fdtd.boundaries import CpmlConfig, SpongeConfig
 from headphone_sims.fdtd.receivers import ReceiverArray
 from headphone_sims.fdtd.simulation import Simulation, SnapshotConfig
 from headphone_sims.fdtd.sources import (
@@ -44,6 +45,7 @@ from headphone_sims.geometry.pinna import (
     select_pinna_probes,
 )
 from headphone_sims.grid import Grid
+from headphone_sims.medium import flow_resistivity_to_sigma, maa_tube_flow_resistivity
 
 Vec3 = tuple[float, float, float]
 
@@ -137,6 +139,24 @@ class FilterSpec:
     # all other cells are open through-tubes (parity/Helmholtz rule unused).
     amts_plug_cells: tuple[tuple[int, int], ...] | None = None
     amts_plug_wall: float = 1e-3
+    # Wall-boundary-layer viscous losses inside the bores: Maa/Crandall
+    # equivalent flow resistivity (evaluated at viscous_eval_frequency)
+    # applied as a momentum sink on the bore air cells. Viscous only — no
+    # thermal loss, no reactive correction — i.e. a lower bound on the true
+    # thermoviscous damping; the rigid default (False) is the zero-loss bound.
+    # Supported for kinds hex/slots/amts; not for fib/rings/solid or
+    # follow_profile grilles.
+    viscous_losses: bool = False
+    viscous_eval_frequency: float = 7000.0  # ~geometric mean of the 5-10k core
+
+    def viscous_radius(self) -> float:
+        """Characteristic bore radius for the tube-resistance formula (slots
+        use the half-width as the parallel-plate hydraulic equivalent)."""
+        if self.kind in ("hex", "amts"):
+            return self.hole_radius
+        if self.kind == "slots":
+            return self.slot_width / 2.0
+        raise ValueError(f"viscous_losses is unsupported for kind={self.kind!r}")
 
     def pattern(self) -> HolePattern | None:
         if self.kind == "hex":
@@ -221,11 +241,25 @@ class SceneConfig:
     # no driver body, no baffle, no structure. Requires filters=() and
     # baffle=False; used as the counterfactual for preservation studies.
     transparent_driver: bool = False
+    # Absorbing boundary: "sponge" (graded damping, ~-40 dB floor) or "cpml"
+    # (convolutional PML, < -60 dB floor — for late-window / fine-spectral
+    # work). sponge_thickness is the absorber depth in cells for both.
+    absorber: Literal["sponge", "cpml"] = "sponge"
     sponge_thickness: int = 30
     n_probes: int = 400
     probe_offset: float = 1.5e-3
     record_ms: float = 2.0
     snapshot_every: int = 0  # 0 = no snapshots
+
+
+def driver_aperture(driver: DriverSpec, center: Vec3) -> ApertureSpec:
+    """The driver's radiating-aperture footprint (near-field metric geometry)."""
+    tilt = np.deg2rad(driver.tilt_deg)
+    normal = (0.0, float(np.sin(tilt)), float(np.cos(tilt)))
+    if driver.shape == "rect":
+        return ApertureSpec(center=center, normal=normal, width=driver.width, height=driver.height)
+    hx, hy = driver.half_extents()
+    return ApertureSpec(center=center, normal=normal, radius=max(hx, hy))
 
 
 @dataclass
@@ -243,6 +277,8 @@ class BuiltScene:
     # Named per-part occupancy grids (baffle, filter_1, pinna, ...) for
     # color-coded geometry visualization; their union equals ``solid``.
     parts: list[tuple[str, torch.Tensor]] = field(default_factory=list)
+    # Radiating-aperture footprint for near-field-aware metric geometry.
+    aperture: ApertureSpec | None = None
 
 
 def _domain_grid(config: SceneConfig) -> tuple[Grid, Vec3, float]:
@@ -259,8 +295,12 @@ def _domain_grid(config: SceneConfig) -> tuple[Grid, Vec3, float]:
     pinna_depth = 45e-3 if config.pinna.kind == "mesh" else 25e-3
     z_max = z_pinna + pinna_depth + config.axial_margin + sponge
 
-    nx = int(np.ceil(2.0 * (r_lateral + sponge) / config.dx))
-    nz = int(np.ceil(z_max / config.dx))
+    # The 1e-9 guard keeps float noise from bumping an exact cell count up by
+    # one (ceil(300.0000000004) = 301), which would shift the whole assembly
+    # by half a cell against the voxel lattice — a measurable staircase-
+    # realization change (see the issue-#6 boundary/voxel-phase study).
+    nx = int(np.ceil(2.0 * (r_lateral + sponge) / config.dx - 1e-9))
+    nz = int(np.ceil(z_max / config.dx - 1e-9))
     shape = (nx, nx, nz)
     grid = Grid.create(shape, dx=config.dx)
     cx = nx * config.dx / 2.0
@@ -298,6 +338,7 @@ def build_scene(
     solid = torch.zeros(grid.shape, dtype=torch.bool)
     porosities: list[float] = []
     parts: list[tuple[str, torch.Tensor]] = []
+    sigma_material: torch.Tensor | None = None
 
     def add_part(name: str, occ_part: torch.Tensor) -> None:
         nonlocal solid
@@ -367,6 +408,8 @@ def build_scene(
 
     for i, spec in enumerate(config.filters):
         if spec.follow_profile:
+            if spec.viscous_losses:
+                raise ValueError("viscous_losses is unsupported for follow_profile grilles")
             if config.driver.shape != "dome":
                 raise ValueError("follow_profile grilles require driver.shape='dome'")
             occ, porosity = parametric.profiled_plate(
@@ -482,6 +525,48 @@ def build_scene(
         add_part(f"filter_{i + 1}", occ)
         porosities.append(porosity)
 
+        if spec.viscous_losses:
+            # Maa/Crandall bore resistance as a momentum sink on the bore air
+            # cells (viscous-only lower bound; see FilterSpec docstring).
+            pat = spec.pattern()
+            if pat is None:
+                raise ValueError("viscous_losses requires a perforated kind")
+            phi = maa_tube_flow_resistivity(spec.viscous_radius(), spec.viscous_eval_frequency)
+            sigma_val = flow_resistivity_to_sigma(phi)
+            if spec.shape == "rect":
+                bore = parametric.rect_plate_bore(
+                    grid,
+                    along_normal(driver_center, spec.standoff),
+                    normal,
+                    width=spec.width,
+                    height=spec.height,
+                    thickness=spec.thickness,
+                    pattern=pat,
+                    pattern_angle_deg=spec.pattern_angle_deg,
+                )
+            else:
+                bore = parametric.plate_bore(
+                    grid,
+                    along_normal(driver_center, spec.standoff),
+                    normal,
+                    radius=spec.radius or (r_driver + 2e-3),
+                    thickness=spec.thickness,
+                    pattern=pat,
+                    pattern_angle_deg=spec.pattern_angle_deg,
+                )
+            bore &= ~solid  # never damp inside solid (faces are masked anyway)
+            if sigma_material is None:
+                sigma_material = torch.zeros(grid.shape, dtype=torch.float64)
+            sigma_material[bore] = torch.maximum(
+                sigma_material[bore], torch.tensor(sigma_val, dtype=torch.float64)
+            )
+            print(
+                f"filter_{i + 1} viscous losses: sigma={sigma_val:.0f} 1/s over "
+                f"{int(bore.sum())} bore cells "
+                f"(a={spec.viscous_radius() * 1e3:.2f} mm @ "
+                f"{spec.viscous_eval_frequency / 1e3:.1f} kHz)"
+            )
+
     pinna_center = (driver_center[0], driver_center[1], z_pinna)
     canal_position = pinna_center  # refined below for mesh pinnae
     probes: npt.NDArray[np.float64]
@@ -575,8 +660,26 @@ def build_scene(
     # staircased surfaces can swallow surface-hugging probes.
     if probes_override is not None:
         probes = probes_override
+        # Paired runs must keep the layout verbatim, but never silently: the
+        # paired scene's solids must be a subset of the original's.
+        n_bad = int((~probe_stencil_air_mask(probes, solid, grid)).sum())
+        if n_bad:
+            raise ValueError(
+                f"{n_bad} override probes have receiver stencils touching solid — "
+                "the paired scene must not add solid where the original had probes"
+            )
     else:
         probes = _remove_probes_in_solid(probes, solid, grid)
+
+    # Placement diagnostic: achieved clearance to the voxelized surface (the
+    # mesh-normal offset can under-deliver on staircased/concave surfaces).
+    clearance = probe_solid_clearance(probes, solid, grid)
+    n_close = int((clearance < config.probe_offset - grid.dx).sum())
+    if n_close:
+        print(
+            f"warning: {n_close} probes closer than probe_offset-dx to solid "
+            f"(min clearance {float(np.min(clearance)) * 1e3:.2f} mm)"
+        )
 
     # Reference probe: closest to the ear-canal entrance.
     ref = int(np.argmin(np.linalg.norm(probes - np.asarray(canal_position), axis=1)))
@@ -691,10 +794,15 @@ def build_scene(
         receivers=ReceiverArray(probes),
         n_steps=n_steps,
         solid=sim_solid,
-        sponge=SpongeConfig(thickness=config.sponge_thickness),
+        sigma_material=sigma_material,
+        sponge=(
+            SpongeConfig(thickness=config.sponge_thickness) if config.absorber == "sponge" else None
+        ),
+        cpml=(CpmlConfig(thickness=config.sponge_thickness) if config.absorber == "cpml" else None),
         device=device,
         snapshot=snapshot,
     )
+    aperture = driver_aperture(config.driver, driver_center)
     return BuiltScene(
         grid=grid,
         simulation=sim,
@@ -705,6 +813,7 @@ def build_scene(
         canal_position=canal_position,
         porosities=porosities,
         parts=parts,
+        aperture=aperture,
     )
 
 
@@ -754,24 +863,90 @@ def _remove_driver_occluded_probes(
     return out
 
 
+def probe_stencil_air_mask(
+    probes: npt.NDArray[np.float64], solid: torch.Tensor, grid: Grid
+) -> npt.NDArray[np.bool_]:
+    """True where every trilinear corner of the probe's receiver stencils —
+    the pressure stencil AND the three staggered velocity stencils — reads an
+    air cell.
+
+    Receivers interpolate p and each v component from their own staggered
+    grids (see ``fdtd.receivers``). A velocity face between an air and a
+    solid cell is masked to zero by the rigid BC, so a probe whose velocity
+    stencil touches solid records biased v (and intensity / incidence /
+    diffuseness) even when its pressure stencil is clear. A face touches the
+    two cells it separates, so along its own axis a velocity stencil needs
+    three consecutive air cells. Stencils that would leave the grid are
+    rejected rather than clamped.
+    """
+    solid_np = solid.numpy()
+    shape = np.asarray(grid.shape)
+    u = np.asarray(probes, dtype=np.float64) / grid.dx  # cell units
+
+    def _stencil_clear(
+        base: npt.NDArray[np.int64], spans: tuple[int, int, int]
+    ) -> npt.NDArray[np.bool_]:
+        good = np.ones(len(base), dtype=bool)
+        for a in range(3):
+            good &= (base[:, a] >= 0) & (base[:, a] + spans[a] <= shape[a])
+        sel = np.flatnonzero(good)
+        for da in range(spans[0]):
+            for db in range(spans[1]):
+                for dc in range(spans[2]):
+                    if len(sel) == 0:
+                        return good
+                    hit = solid_np[base[sel, 0] + da, base[sel, 1] + db, base[sel, 2] + dc]
+                    good[sel[hit]] = False
+                    sel = sel[~hit]
+        return good
+
+    base_p = np.floor(u - 0.5).astype(np.int64)
+    ok = _stencil_clear(base_p, (2, 2, 2))
+    for axis in range(3):
+        base_v = base_p.copy()
+        base_v[:, axis] = np.floor(u[:, axis] - 1.0).astype(np.int64)
+        spans = [2, 2, 2]
+        spans[axis] = 3  # two faces span three cells along the face axis
+        ok &= _stencil_clear(base_v, (spans[0], spans[1], spans[2]))
+    return ok
+
+
+def probe_solid_clearance(
+    probes: npt.NDArray[np.float64],
+    solid: torch.Tensor,
+    grid: Grid,
+    max_radius: float = 5e-3,
+) -> npt.NDArray[np.float64]:
+    """Distance from each probe to the nearest solid voxel CENTER within
+    ``max_radius`` (inf when none) — a placement diagnostic for the achieved
+    surface offset. The voxelized surface lies within ~dx/2 of the returned
+    center distance."""
+    solid_np = solid.numpy()
+    shape = np.asarray(grid.shape)
+    r_cells = int(np.ceil(max_radius / grid.dx))
+    out = np.full(len(probes), np.inf)
+    for i, pos in enumerate(np.asarray(probes, dtype=np.float64)):
+        c = np.floor(pos / grid.dx - 0.5).astype(int)
+        lo = np.maximum(c - r_cells, 0)
+        hi = np.minimum(c + r_cells + 2, shape)
+        win = solid_np[lo[0] : hi[0], lo[1] : hi[1], lo[2] : hi[2]]
+        idx = np.argwhere(win)
+        if len(idx) == 0:
+            continue
+        centers = (idx + lo + 0.5) * grid.dx
+        out[i] = float(np.min(np.linalg.norm(centers - pos, axis=1)))
+    return out
+
+
 def _remove_probes_in_solid(
     probes: npt.NDArray[np.float64], solid: torch.Tensor, grid: Grid
 ) -> npt.NDArray[np.float64]:
-    """Keep only probes whose 8 trilinear corner cells are all air."""
-    solid_np = solid.numpy()
-    keep = np.ones(len(probes), dtype=bool)
-    for i, pos in enumerate(probes):
-        base = np.floor(pos / grid.dx - 0.5).astype(int)
-        for corner in range(8):
-            idx = base + np.array([(corner >> 2) & 1, (corner >> 1) & 1, corner & 1])
-            idx = np.clip(idx, 0, np.array(grid.shape) - 1)
-            if solid_np[idx[0], idx[1], idx[2]]:
-                keep[i] = False
-                break
+    """Keep only probes whose receiver stencils sample air cells only."""
+    keep = probe_stencil_air_mask(probes, solid, grid)
     if not keep.any():
         raise ValueError("all probes fall inside solid geometry")
     if not keep.all():
-        print(f"dropped {int((~keep).sum())} probes inside solid geometry")
+        print(f"dropped {int((~keep).sum())} probes whose receiver stencils touch solid")
     return probes[keep]
 
 

@@ -24,13 +24,19 @@ import matplotlib.pyplot as plt
 
 plt.rcParams["font.family"] = "Noto Sans CJK HK"
 import numpy as np
-from common import SPATIAL_CORE, comb_stats, coupling_db, reseat_paths
+from common import (
+    SPATIAL_CORE,
+    aperture_for,
+    band_map,
+    comb_stats,
+    coupling_db,
+    load_result,
+    map_corr,
+    reseat_paths,
+)
 
-from headphone_sims.analysis import signals
 from headphone_sims.analysis.metrics import compute_metrics
-from headphone_sims.fdtd.simulation import SimulationResult
 
-C_SOUND = 343.0
 MODELS = {
     "z1r": ("MDR-Z1R型", "#C05B21"),
     "lcd": ("LCD型", "#46688A"),
@@ -45,41 +51,13 @@ COND_LABEL = {
 }
 
 
-def core_metrics(pin_path: str) -> dict:
-    d = np.load(pin_path)
-    res = SimulationResult(
-        dt=float(d["dt"]), dx=0.5e-3, positions=d["positions"],
-        p=d["p"].astype(float), v=d["v"].astype(float),
-        source_waveform=np.zeros(d["p"].shape[0]),
-    )
+def core_metrics(pin_path: str, model: str) -> dict:
+    res, d = load_result(pin_path)
     return compute_metrics(
         res, tuple(d["driver_center"]), int(d["reference_index"]),
         band=(5000.0, 10000.0),
+        aperture=aperture_for(model, d["driver_center"]),
     ).summary()
-
-
-def band_map(inc_path: str, f_want: float) -> tuple[np.ndarray, np.ndarray]:
-    """(canal-relative xy, band level dB re mean) on the incident run."""
-    d = np.load(inc_path)
-    p, dt = d["p"].astype(float), float(d["dt"])
-    pos, dc, canal = d["positions"], d["driver_center"], d["canal"]
-    p = signals.bandpass_zero_phase(p, dt, 1000.0, 12500.0, axis=0)
-    t = np.arange(p.shape[0]) * dt
-    r = np.linalg.norm(pos - dc, axis=1)
-    masks = np.stack([(t >= ri / C_SOUND - 0.15e-3) & (t <= ri / C_SOUND + 0.45e-3) for ri in r], axis=1)
-    centers = signals.third_octave_centers(1000, 12500)
-    i = int(np.argmin(np.abs(centers - f_want)))
-    mags = signals.band_magnitudes(p * masks, dt, centers[i : i + 1], axis=0)[0]
-    lvl = 20 * np.log10(mags / mags.mean())
-    return pos[:, :2] - canal[:2], lvl
-
-
-def map_corr(a_xy, a_lvl, b_xy, b_lvl) -> float:
-    """Correlation of two probe maps, nearest-neighbor matched (<=1.5mm)."""
-    d = np.linalg.norm(a_xy[:, None, :] - b_xy[None, :, :], axis=2)
-    j = d.argmin(axis=1)
-    ok = d[np.arange(len(a_xy)), j] < 1.5e-3
-    return float(np.corrcoef(a_lvl[ok], b_lvl[j[ok]])[0, 1])
 
 
 def comb_shift_hz(f0, c0, f1, c1, band=SPATIAL_CORE, max_shift_oct=0.35) -> float:
@@ -120,7 +98,7 @@ def main() -> None:
             bp = reseat_paths(model, cond, structured=False)
             freqs, c = coupling_db(sp, bp)
             combs[cond] = (freqs, c)
-            mets[cond] = core_metrics(sp[1])
+            mets[cond] = core_metrics(sp[1], model)
         f0, c0 = combs["base"]
         core = (f0 >= SPATIAL_CORE[0]) & (f0 <= SPATIAL_CORE[1])
         entry: dict = {"conditions": {}}
@@ -150,9 +128,9 @@ def main() -> None:
             max(entry["conditions"][c]["dC_rms_db"] for c in CONDS if c != "base")
         )
         # illumination-map translation (10k): correlation base vs vy shifts
-        xy0, l0 = band_map(reseat_paths(model, "base", True)[0], 10000.0)
+        xy0, l0 = band_map(reseat_paths(model, "base", True)[0], 10000.0, model)
         for cond in ("vym2", "vyp2", "axp2"):
-            xy1, l1 = band_map(reseat_paths(model, cond, True)[0], 10000.0)
+            xy1, l1 = band_map(reseat_paths(model, cond, True)[0], 10000.0, model)
             entry["conditions"][cond]["map10k_corr"] = map_corr(xy0, l0, xy1, l1)
         summary[model] = entry
         print(

@@ -9,7 +9,7 @@ import numpy.typing as npt
 import torch
 
 from headphone_sims.fdtd import kernel
-from headphone_sims.fdtd.boundaries import SpongeConfig, attach_damping
+from headphone_sims.fdtd.boundaries import CpmlConfig, CpmlState, SpongeConfig, attach_damping
 from headphone_sims.fdtd.kernel import FdtdState
 from headphone_sims.fdtd.receivers import BakedReceivers, ReceiverArray
 from headphone_sims.fdtd.sources import BakedSource, Source
@@ -62,11 +62,14 @@ class Simulation:
         solid: torch.Tensor | None = None,
         sigma_material: torch.Tensor | None = None,
         sponge: SpongeConfig | None = _DEFAULT_SPONGE,
+        cpml: CpmlConfig | None = None,
         device: torch.device | str | None = None,
         snapshot: SnapshotConfig | None = None,
     ) -> None:
         if not sources:
             raise ValueError("at least one source is required")
+        if cpml is not None and sponge is not None and sponge is not _DEFAULT_SPONGE:
+            raise ValueError("pass either sponge or cpml, not both")
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = torch.device(device)
@@ -75,6 +78,9 @@ class Simulation:
         self.snapshot = snapshot
 
         self.state = FdtdState.zeros(grid, device=self.device)
+        if cpml is not None:
+            sponge = None
+            self.state.cpml = CpmlState.build(grid, cpml, self.device)
         attach_damping(self.state, sponge=sponge, solid=solid, sigma_material=sigma_material)
         self.baked_sources: list[BakedSource] = [s.bake(grid, self.device) for s in sources]
         self.baked_receivers: BakedReceivers = receivers.bake(grid, n_steps, self.device)

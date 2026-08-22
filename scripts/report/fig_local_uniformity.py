@@ -13,12 +13,18 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from headphone_sims.analysis import signals
+from headphone_sims.experiments.config import load_config
+from headphone_sims.geometry.scene import driver_aperture
 
 C = 343.0
 MODELS = {"Z1R": ("MDR-Z1R型", "#C05B21", "runs/batch3_z1r_incident.npz"),
           "LCD": ("LCD型", "#46688A", "runs/batch3_lcd_incident.npz"),
           "DX": ("DX10000CL型", "#2E7D51", "runs/batch3_dx_incident.npz"),
           "DCA": ("DCA型(AMTS実測)", "#7A4B94", "runs/batch3_dca2_incident.npz")}
+CFGS = {"Z1R": "configs/hutubs_70mm_z1r_v2.yaml",
+        "LCD": "configs/hutubs_90mm_planar_v2.yaml",
+        "DX": "configs/hutubs_40mm_dome_v2.yaml",
+        "DCA": "configs/hutubs_dca_amts_real.yaml"}
 
 
 def smooth(freqs, mag, frac=6):
@@ -54,7 +60,8 @@ for key, (label, color, path) in MODELS.items():
     d = np.load(path)
     p, dt, pos, dc = d["p"].astype(float), float(d["dt"]), d["positions"], d["driver_center"]
     t = np.arange(p.shape[0]) * dt
-    r = np.linalg.norm(pos - dc, axis=1)
+    ap = driver_aperture(load_config(CFGS[key]).scene.driver, tuple(float(c) for c in dc))
+    r = ap.nearest_distance(pos)  # near-field first-arrival reference
     masks = np.stack([(t >= ri/C-0.15e-3) & (t <= ri/C+0.45e-3) for ri in r], axis=1)
     pb = signals.bandpass_zero_phase(p, dt, 1000.0, 12500.0, axis=0) * masks
     L = 20*np.log10(np.sqrt((pb**2).sum(axis=0)) + 1e-15)

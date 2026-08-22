@@ -117,7 +117,9 @@ def run_experiment(config: ExperimentConfig, run_dir: Path | None = None) -> Pat
     result = built.simulation.run()
     _save_signals(run_dir / "signals.npz", result)
 
-    metrics = compute_metrics(result, built.driver_center, built.reference_index)
+    metrics = compute_metrics(
+        result, built.driver_center, built.reference_index, aperture=built.aperture
+    )
     payload: dict[str, Any] = {"metrics": metrics.summary()}
 
     if config.compare_without_filters and config.scene.filters:
@@ -130,7 +132,10 @@ def run_experiment(config: ExperimentConfig, run_dir: Path | None = None) -> Pat
         comparison = compare_runs(result, ref_result)
         payload["filter_comparison"] = comparison.summary()
         ref_metrics = compute_metrics(
-            ref_result, ref_built.driver_center, ref_built.reference_index
+            ref_result,
+            ref_built.driver_center,
+            ref_built.reference_index,
+            aperture=ref_built.aperture,
         )
         payload["metrics_nofilter"] = ref_metrics.summary()
 

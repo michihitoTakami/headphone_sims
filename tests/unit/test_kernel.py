@@ -62,3 +62,48 @@ def test_sponge_absorbs_energy() -> None:
         step(state)
     e1 = field_energy(state)
     assert e1 < 0.01 * e0
+
+
+def test_cpml_absorbs_energy_and_rejects_double_absorber() -> None:
+    import numpy as np
+    import pytest
+
+    from headphone_sims.fdtd.boundaries import CpmlConfig, SpongeConfig
+    from headphone_sims.fdtd.receivers import ReceiverArray
+    from headphone_sims.fdtd.simulation import Simulation
+    from headphone_sims.fdtd.sources import PointSource, ricker
+
+    grid = Grid.create((48, 48, 48), dx=2e-3)
+    wf = ricker(grid.dt, 200, peak_frequency=8000.0)
+    center = (48e-3, 48e-3, 48e-3)
+    sim = Simulation(
+        grid=grid,
+        sources=[PointSource(position=center, waveform=wf)],
+        receivers=ReceiverArray(np.array([[60e-3, 48e-3, 48e-3]])),
+        n_steps=200,
+        sponge=None,
+        cpml=CpmlConfig(thickness=10),
+        device="cpu",
+    )
+    e_injected = None
+    st = sim.state
+    for it in range(sim.n_steps):
+        step(st)
+        for src in sim.baked_sources:
+            src.inject_velocity((st.vx, st.vy, st.vz), it)
+            src.inject_pressure(st.p, it)
+        if it == 60:
+            e_injected = field_energy(st)
+    assert e_injected is not None and e_injected > 0.0
+    assert field_energy(st) < 0.01 * e_injected  # >99% absorbed
+
+    with pytest.raises(ValueError, match="not both"):
+        Simulation(
+            grid=grid,
+            sources=[PointSource(position=center, waveform=wf)],
+            receivers=ReceiverArray(np.array([[60e-3, 48e-3, 48e-3]])),
+            n_steps=10,
+            sponge=SpongeConfig(thickness=10),
+            cpml=CpmlConfig(thickness=10),
+            device="cpu",
+        )

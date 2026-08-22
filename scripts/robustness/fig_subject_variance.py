@@ -23,10 +23,9 @@ import matplotlib.pyplot as plt
 
 plt.rcParams["font.family"] = "Noto Sans CJK HK"
 import numpy as np
-from common import structured_paths
+from common import aperture_for, load_result, structured_paths
 
 from headphone_sims.analysis.metrics import compute_metrics
-from headphone_sims.fdtd.simulation import SimulationResult
 
 MODELS = {
     "z1r": ("MDR-Z1R型", "#C05B21"),
@@ -44,15 +43,11 @@ KEYS = [
 
 def metrics_for(subject: int, model: str) -> tuple[dict, dict]:
     _inc_path, pin_path = structured_paths(subject, model)
-    d = np.load(pin_path)
-    res = SimulationResult(
-        dt=float(d["dt"]), dx=0.5e-3, positions=d["positions"],
-        p=d["p"].astype(float), v=d["v"].astype(float),
-        source_waveform=np.zeros(d["p"].shape[0]),
-    )
+    res, d = load_result(pin_path)
     args = (tuple(d["driver_center"]), int(d["reference_index"]))
-    std = compute_metrics(res, *args).summary()
-    core = compute_metrics(res, *args, band=(5000.0, 10000.0)).summary()
+    ap = aperture_for(model, d["driver_center"])
+    std = compute_metrics(res, *args, aperture=ap).summary()
+    core = compute_metrics(res, *args, band=(5000.0, 10000.0), aperture=ap).summary()
     return std, core
 
 
